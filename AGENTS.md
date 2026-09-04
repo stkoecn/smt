@@ -26,7 +26,7 @@ cargo build --release --manifest-path src-tauri/Cargo.toml  # 便携 exe（内�
 
 ## 关键约定 / 踩坑记录（勿破坏）
 
-1. **`custom-protocol` 必须保留为默认 feature**（`Cargo.toml` `default = ["custom-protocol"]`）。tauri 用它区分 dev/prod 上下文（tauri `build.rs`: `dev = !custom_protocol`）；去掉后裸 `cargo build --release` 的 exe 会走 devUrl 导致前端空白。代价：无热更新，改前端需重新 `npm run build`。
+1. **`custom-protocol` 必须保留为默认 feature**（`Cargo.toml` `default = ["custom-protocol"]`）。tauri 用它区分 dev/prod 上下文（tauri `build.rs`: `dev = !custom_protocol`）；去掉后裸 `cargo build --release` 的 exe 会走 devUrl 导致前端空白。开发热更新走 `npm run tauri:dev`（即 `scripts/dev-hmr.mjs`）：临时以 `--no-default-features` 编译让窗口连 vite devUrl(3001) 实现 HMR；`tauri build` / 裸 `cargo build --release` 仍走默认 feature 内嵌 dist。注意：HMR 模式无 Rust watch（改 Rust 需重跑 `npm run tauri:dev`），且 dev/release 因 feature 不同会各自全量重编一次。
 2. **托盘 `TrayIcon` 句柄必须保活**：`TrayIcon` 是引用计数资源，最后一个句柄 drop 时图标即从系统托盘移除（表现为右键无菜单——用户右键的是残留幽灵图标）。当前用全局 `static TRAY: OnceLock<TrayIcon>` 持有。
 3. **uiStore 持久化必须 `partialize`**：`newTaskSignal`/`newFolderSignal` 等瞬态信号禁止写入 localStorage（曾导致：启动时自动弹「新建任务」弹窗，且弹窗遮罩使左侧按钮点不动）。
 4. **发布版体积压到极致**：release profile 为 `lto="fat" + codegen-units=1 + opt-level="z" + panic="abort" + strip`（约 3.5MB）。改 profile 前确认体积不反弹。前端已移除 Monaco，用 textarea 编辑脚本。
