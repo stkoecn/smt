@@ -1866,6 +1866,9 @@ mod tests {
             save_log: true,
             shell: None,
             run_as_admin: false,
+            dependencies: vec![],
+            wait_for_deps: false,
+            dep_delay_secs: 5,
             order: 0,
         }
     }

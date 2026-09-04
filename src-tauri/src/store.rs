@@ -51,6 +51,9 @@ fn seed_tree() -> TaskTree {
             save_log: false,
             shell: None,
             run_as_admin: false,
+            dependencies: vec![],
+            wait_for_deps: false,
+            dep_delay_secs: 5,
         },
     );
     tree
@@ -213,6 +216,9 @@ mod tests {
                 save_log: false,
                 shell: None,
                 run_as_admin: false,
+                dependencies: vec![],
+                wait_for_deps: false,
+                dep_delay_secs: 5,
             },
         )
         .unwrap();

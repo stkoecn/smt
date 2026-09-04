@@ -42,9 +42,23 @@ pub struct TaskDef {
     /// Windows 下经 UAC 以管理员身份启动（stdout/stderr 走日志文件回读）
     #[serde(default)]
     pub run_as_admin: bool,
+    /// 依赖的任务 id 列表（启动前需先就绪，且须构成有向无环关系）
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// 是否在本任务启动前自动拉起依赖任务（false = 依赖未启动则本任务启动失败）
+    #[serde(default)]
+    pub wait_for_deps: bool,
+    /// 依赖全部就绪后、启动本任务前的延时秒数（默认 5）
+    #[serde(default = "default_dep_delay")]
+    pub dep_delay_secs: u32,
     /// 同一文件夹下任务顺序（0..n-1，由 move/create 维护）
     #[serde(default)]
     pub order: i32,
+}
+
+/// 依赖就绪后的默认延时（秒）
+fn default_dep_delay() -> u32 {
+    5
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -63,6 +77,12 @@ pub struct TaskInput {
     pub shell: Option<String>,
     #[serde(default)]
     pub run_as_admin: bool,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub wait_for_deps: bool,
+    #[serde(default = "default_dep_delay")]
+    pub dep_delay_secs: u32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -71,6 +91,10 @@ pub enum TreeError {
     DuplicateName(String),
     InvalidParent(String),
     FolderNotEmpty(String),
+    /// 依赖关系成环（存在任务间循环依赖）
+    DependencyCycle(String),
+    /// 依赖的任务不存在（悬空引用）
+    DependencyMissing(String),
 }
 
 impl std::fmt::Display for TreeError {
@@ -80,6 +104,8 @@ impl std::fmt::Display for TreeError {
             TreeError::DuplicateName(name) => write!(f, "同一文件夹下已存在同名节点: {name}"),
             TreeError::InvalidParent(id) => write!(f, "无效的父文件夹: {id}"),
             TreeError::FolderNotEmpty(id) => write!(f, "文件夹非空，无法删除: {id}"),
+            TreeError::DependencyCycle(msg) => write!(f, "依赖关系存在循环: {msg}"),
+            TreeError::DependencyMissing(id) => write!(f, "依赖的任务不存在: {id}"),
         }
     }
 }
@@ -98,6 +124,62 @@ impl TaskTree {
 
     pub fn task(&self, id: &str) -> Option<&TaskDef> {
         self.tasks.iter().find(|t| t.id == id)
+    }
+
+    /// 校验依赖关系：所有依赖 id 必须存在，且整张依赖图必须无环（有向无环）。
+    /// 返回 Err(DependencyMissing / DependencyCycle)。
+    pub fn validate_dependencies(&self) -> Result<(), TreeError> {
+        let exist: HashSet<&str> = self.tasks.iter().map(|t| t.id.as_str()).collect();
+        for t in &self.tasks {
+            for dep in &t.dependencies {
+                if !exist.contains(dep.as_str()) {
+                    return Err(TreeError::DependencyMissing(format!(
+                        "任务「{}」依赖的「{}」不存在",
+                        t.name, dep
+                    )));
+                }
+            }
+        }
+        // DFS 三色标记检测环：0=未访问 1=访问中（栈上） 2=已结束
+        let mut mark: HashMap<&str, u8> = HashMap::new();
+        fn visit<'a>(
+            id: &'a str,
+            tasks: &'a [TaskDef],
+            mark: &mut HashMap<&'a str, u8>,
+            path: &mut Vec<&'a str>,
+        ) -> Result<(), TreeError> {
+            match mark.get(id) {
+                Some(1) => {
+                    // 命中访问中 → 有环；path 里从 id 首次出现到末尾即环
+                    let start = path.iter().position(|p| *p == id).unwrap_or(0);
+                    let cycle = path[start..].to_vec();
+                    return Err(TreeError::DependencyCycle(
+                        cycle
+                            .iter()
+                            .copied()
+                            .chain(std::iter::once(id))
+                            .collect::<Vec<_>>()
+                            .join(" → "),
+                    ));
+                }
+                Some(2) => return Ok(()),
+                _ => {}
+            }
+            mark.insert(id, 1);
+            path.push(id);
+            if let Some(t) = tasks.iter().find(|t| t.id == id) {
+                for d in &t.dependencies {
+                    visit(d, tasks, mark, path)?;
+                }
+            }
+            path.pop();
+            mark.insert(id, 2);
+            Ok(())
+        }
+        for t in &self.tasks {
+            visit(&t.id, &self.tasks, &mut mark, &mut Vec::new())?;
+        }
+        Ok(())
     }
 
     /// folders directly under `parent` (None = root)
@@ -358,9 +440,17 @@ impl TaskTree {
             save_log: input.save_log,
             shell: input.shell,
             run_as_admin: input.run_as_admin,
+            dependencies: input.dependencies,
+            wait_for_deps: input.wait_for_deps,
+            dep_delay_secs: input.dep_delay_secs,
             order,
         };
+        // 依赖自引用 + 悬挂/环校验（先临时插入再整体校验，让 validate 能看到本任务）
         self.tasks.push(task.clone());
+        if let Err(e) = self.validate_dependencies() {
+            self.tasks.pop(); // 校验失败回滚本次插入
+            return Err(e);
+        }
         self.normalize();
         Ok(task)
     }
@@ -388,6 +478,7 @@ impl TaskTree {
         }) {
             return Err(TreeError::DuplicateName(name));
         }
+        let prev = self.tasks[idx].clone();
         {
             let task = &mut self.tasks[idx];
             task.name = name;
@@ -400,6 +491,14 @@ impl TaskTree {
             task.save_log = input.save_log;
             task.shell = input.shell;
             task.run_as_admin = input.run_as_admin;
+            task.dependencies = input.dependencies;
+            task.wait_for_deps = input.wait_for_deps;
+            task.dep_delay_secs = input.dep_delay_secs;
+        }
+        // 依赖自引用 + 悬挂/环校验
+        if let Err(e) = self.validate_dependencies() {
+            self.tasks[idx] = prev; // 回滚
+            return Err(e);
         }
         self.normalize(); // folder_id 变更时重排到目标组末尾
         self.tasks
@@ -414,6 +513,12 @@ impl TaskTree {
         self.tasks.retain(|t| t.id != id);
         if self.tasks.len() == before {
             return Err(TreeError::NotFound(id.to_string()));
+        }
+        // 移除其它任务对已删任务的依赖引用，避免悬空依赖
+        for t in self.tasks.iter_mut() {
+            if t.dependencies.iter().any(|d| d == id) {
+                t.dependencies.retain(|d| d != id);
+            }
         }
         self.normalize();
         Ok(())
@@ -494,6 +599,9 @@ mod tests {
                 save_log: false,
                 shell: None,
                 run_as_admin: false,
+                dependencies: vec![],
+                wait_for_deps: false,
+                dep_delay_secs: 5,
             },
         )
         .unwrap();
@@ -521,6 +629,9 @@ mod tests {
                     save_log: false,
                     shell: None,
                     run_as_admin: false,
+                    dependencies: vec![],
+                    wait_for_deps: false,
+                    dep_delay_secs: 5,
                 }
             ),
             Err(TreeError::DuplicateName(_))
@@ -607,7 +718,8 @@ mod tests {
         // 移入子文件夹
         t.move_folder("fc", Some("f1".into()), None).unwrap();
         assert_eq!(t.folder("fc").unwrap().parent_id.as_deref(), Some("f1"));
-        assert_eq!(t.child_folders(Some("f1")).len(), 1);
+        // f1 原有子文件夹 f3，加上 fc 共 2 个
+        assert_eq!(t.child_folders(Some("f1")).len(), 2);
     }
 
     #[test]
@@ -627,6 +739,9 @@ mod tests {
                     save_log: false,
                     shell: None,
                     run_as_admin: false,
+                    dependencies: vec![],
+                    wait_for_deps: false,
+                    dep_delay_secs: 5,
                 },
             )
             .unwrap();
@@ -650,5 +765,85 @@ mod tests {
         };
         t.normalize();
         assert_eq!(t.child_folders(None)[0].order, 0);
+    }
+
+    fn base_input(name: &str) -> TaskInput {
+        TaskInput {
+            name: name.into(),
+            folder_id: None,
+            command: "echo hi".into(),
+            workdir: None,
+            env: BTreeMap::new(),
+            auto_start: false,
+            auto_attach: false,
+            save_log: false,
+            shell: None,
+            run_as_admin: false,
+            dependencies: vec![],
+            wait_for_deps: false,
+            dep_delay_secs: 5,
+        }
+    }
+
+    #[test]
+    fn dependency_cycle_is_rejected() {
+        let mut t = TaskTree::default();
+        t.create_task("a", base_input("A")).unwrap();
+        t.create_task("b", base_input("B")).unwrap();
+        t.create_task("c", base_input("C")).unwrap();
+        // 先建立无环依赖：a → b → c
+        let mut i = base_input("A");
+        i.dependencies = vec!["b".into()];
+        t.update_task("a", i).unwrap();
+        let mut i = base_input("B");
+        i.dependencies = vec!["c".into()];
+        t.update_task("b", i).unwrap();
+        // 现在 b → c → b 成环 → 拒绝
+        let mut i = base_input("C");
+        i.dependencies = vec!["b".into()];
+        assert!(t.update_task("c", i).is_err());
+        // 三任务环 a → b → c → a 也拒绝
+        let mut i = base_input("A");
+        i.dependencies = vec!["b".into()];
+        t.update_task("a", i).unwrap();
+        let mut i = base_input("B");
+        i.dependencies = vec!["c".into()];
+        t.update_task("b", i).unwrap();
+        let mut i = base_input("C");
+        i.dependencies = vec!["a".into()];
+        assert!(t.update_task("c", i).is_err());
+        // 无环依赖应被接受：在全新树上 c 依赖 a（a ← c）
+        let mut t3 = TaskTree::default();
+        t3.create_task("a", base_input("A")).unwrap();
+        t3.create_task("c", base_input("C")).unwrap();
+        let mut i = base_input("C");
+        i.dependencies = vec!["a".into()];
+        assert!(t3.update_task("c", i).is_ok());
+    }
+
+    #[test]
+    fn self_dependency_is_rejected() {
+        let mut t = TaskTree::default();
+        t.create_task("a", base_input("A")).unwrap();
+        let mut i = base_input("A");
+        i.dependencies = vec!["a".into()];
+        assert!(t.update_task("a", i).is_err());
+        // create 时自引用也被拒
+        let mut i = base_input("X");
+        i.dependencies = vec!["x".into()];
+        assert!(t.create_task("x", i).is_err());
+    }
+
+    #[test]
+    fn delete_task_prunes_dangling_deps() {
+        let mut t = TaskTree::default();
+        t.create_task("a", base_input("A")).unwrap();
+        t.create_task("b", base_input("B")).unwrap();
+        let mut i = base_input("B");
+        i.dependencies = vec!["a".into()];
+        t.update_task("b", i).unwrap();
+        t.delete_task("a").unwrap();
+        let b = t.task("b").unwrap();
+        assert!(b.dependencies.is_empty());
     }
 }
