@@ -14,11 +14,12 @@ import {
   RefreshCw,
   Filter,
   GripVertical,
+  List,
 } from 'lucide-react';
 import type { TreeNode, TaskDef } from '@/types';
 import { useTaskStore, buildTree, siblingsOf, STARTABLE_STATES } from '@/stores/taskStore';
 import { useUIStore, type TreeFilter } from '@/stores/uiStore';
-import { openConsoleTab } from '@/components/Workspace';
+import { openConsoleTab, closeConsoleTab } from '@/components/Workspace';
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu';
 import { TaskFormModal } from '@/components/TaskFormModal';
 import { Modal } from '@/components/Modal';
@@ -48,6 +49,14 @@ function stateColor(state: string): string {
 }
 
 const RUNNABLE_STATES = ['running', 'exited', 'failed', 'error'];
+
+/** 筛选 chip 的纯图标形态：面板过窄时替代文字（状态点与任务树视觉语言一致） */
+const CHIP_ICONS: Record<TreeFilter, React.ReactNode> = {
+  all: <List size={12} />,
+  running: <span className="status-dot status-dot-running" />,
+  stopped: <span className="status-dot status-dot-stopped" />,
+  error: <span className="status-dot status-dot-error" />,
+};
 
 /** 文件夹内的任务总数与运行数（含子文件夹） */
 function folderStats(node: Extract<TreeNode, { kind: 'folder' }>, statuses: Record<string, string>): [number, number] {
@@ -118,6 +127,21 @@ export function TaskTreePanel() {
   const [rename, setRename] = useState<RenameState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [dragging, setDragging] = useState<{ id: string; kind: 'folder' | 'task' } | null>(null);
+  // 删除确认（防误删：文件夹删除会级联删除子项并停止运行中的进程）
+  const [delConfirm, setDelConfirm] = useState<{ kind: 'task' | 'folder'; id: string; name: string } | null>(null);
+
+  // 筛选 chips 可用宽度不足时切换为纯图标（文字版需要约 240px），避免挤压错乱
+  const chipsRef = useRef<HTMLDivElement>(null);
+  const [iconChips, setIconChips] = useState(false);
+  useEffect(() => {
+    const el = chipsRef.current;
+    if (!el) return;
+    const update = () => setIconChips(el.clientWidth < 240);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [dragOver, setDragOver] = useState<
     | { kind: 'folder'; id: string; zone: 'before' | 'into' | 'after' }
     | { kind: 'task'; id: string; zone: 'before' | 'after' }
@@ -232,7 +256,7 @@ export function TaskTreePanel() {
       { label: '打开输出窗口', action: () => openConsole(task) },
       { label: '复制任务', action: () => void duplicate(task) },
       { label: '编辑', action: () => openForm({ task, defaultFolderId: task.folderId }) },
-      { label: '删除', action: () => void deleteTask(task.id), danger: true },
+      { label: '删除', action: () => setDelConfirm({ kind: 'task', id: task.id, name: task.name }), danger: true },
     ];
   };
 
@@ -248,6 +272,9 @@ export function TaskTreePanel() {
       saveLog: task.saveLog,
       shell: task.shell,
       runAsAdmin: task.runAsAdmin,
+      dependencies: task.dependencies,
+      waitForDeps: task.waitForDeps,
+      depDelaySecs: task.depDelaySecs,
     });
     if (id) setSelected(id);
   };
@@ -265,7 +292,7 @@ export function TaskTreePanel() {
       { label: '新增子文件夹', action: () => void createFolder('新建文件夹', folderId) },
       { label: '新增任务', action: () => openForm({ task: null, defaultFolderId: folderId }) },
       { label: '重命名', action: () => setRename({ kind: 'folder', id: folderId, name: folders.find((f) => f.id === folderId)?.name ?? '' }) },
-      { label: '删除', action: () => void deleteFolder(folderId), danger: true },
+      { label: '删除', action: () => setDelConfirm({ kind: 'folder', id: folderId, name: folders.find((f) => f.id === folderId)?.name ?? '' }), danger: true },
     ];
   };
 
@@ -273,6 +300,22 @@ export function TaskTreePanel() {
     { label: '新增文件夹', action: () => void createFolder('新建文件夹', null) },
     { label: '新增任务', action: () => openForm({ task: null, defaultFolderId: null }) },
   ];
+
+  /** 确认后真正执行删除：先关掉对应控制台标签（后端同时停掉进程）。 */
+  const doDelete = () => {
+    if (!delConfirm) return;
+    if (delConfirm.kind === 'task') {
+      closeConsoleTab(delConfirm.id);
+      void deleteTask(delConfirm.id);
+    } else {
+      const node = findNode(tree, delConfirm.id);
+      if (node?.kind === 'folder') {
+        for (const tid of collectTaskIds(node)) closeConsoleTab(tid);
+      }
+      void deleteFolder(delConfirm.id);
+    }
+    setDelConfirm(null);
+  };
 
   /** Pointer 事件实现拖拽（不依赖 WebView2 时好时坏的 HTML5 DnD）。
    *  落点按指针在目标节点行内的纵向位置判定：
@@ -460,13 +503,38 @@ export function TaskTreePanel() {
                 <FolderOpen size={13} className="text-accent" />
               )}
             </span>
-            <span className="flex-1 font-mono text-xs truncate ml-1">{f.name}</span>
-            {total > 0 && (
-              <span className={`shrink-0 mr-1 text-[10px] font-mono tabular-nums ${running > 0 ? 'text-financial-up' : 'text-txt-subtle'}`}>
-                {running}/{total}
-              </span>
-            )}
+            {/* 文件夹名 + 运行/总数徽标作为一个整体：徽标紧跟名字，hover 按钮在行尾 */}
+            <span className="flex-1 min-w-0 flex items-center gap-1 ml-1">
+              <span className="font-mono text-xs truncate">{f.name}</span>
+              {total > 0 && (
+                <span className={`shrink-0 text-[10px] font-mono tabular-nums ${running > 0 ? 'text-financial-up' : 'text-txt-subtle'}`}>
+                  {running}/{total}
+                </span>
+              )}
+            </span>
             <span className="hidden group-hover:flex items-center shrink-0">
+              <button
+                data-act
+                className="icon-btn"
+                title="新增子文件夹"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void createFolder('新建文件夹', f.id);
+                }}
+              >
+                <FolderPlus size={12} />
+              </button>
+              <button
+                data-act
+                className="icon-btn"
+                title="在此文件夹新增任务"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openForm({ task: null, defaultFolderId: f.id });
+                }}
+              >
+                <FilePlus size={12} />
+              </button>
               <button
                 data-act
                 className="icon-btn icon-btn-success"
@@ -502,28 +570,6 @@ export function TaskTreePanel() {
                 }}
               >
                 <RotateCw size={11} />
-              </button>
-              <button
-                data-act
-                className="icon-btn"
-                title="新增子文件夹"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void createFolder('新建文件夹', f.id);
-                }}
-              >
-                <FolderPlus size={12} />
-              </button>
-              <button
-                data-act
-                className="icon-btn"
-                title="在此文件夹新增任务"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openForm({ task: null, defaultFolderId: f.id });
-                }}
-              >
-                <FilePlus size={12} />
               </button>
             </span>
           </div>
@@ -564,25 +610,28 @@ export function TaskTreePanel() {
         <span className="w-4 h-4 flex items-center justify-center shrink-0">
           <span className={`status-dot ${stateColor(st)}`} />
         </span>
-        <span className="flex-1 font-mono text-xs truncate ml-1">{task.name}</span>
-        {ports[task.id]?.length ? (
-          <span className="flex items-center gap-1 mr-1 shrink-0">
-            {ports[task.id]!.map((url) => (
-              <button
-                key={url}
-                data-act
-                className="px-1 py-0.5 text-[10px] rounded-sm text-accent bg-accent/10 hover:bg-accent/20 font-mono transition-colors"
-                title={`用浏览器打开 ${url}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void openBrowser(url);
-                }}
-              >
-                :{url.slice(url.lastIndexOf(':') + 1)}
-              </button>
-            ))}
-          </span>
-        ) : null}
+        {/* 任务名 + 端口作为一个整体：端口紧跟名字，hover 按钮在行尾，互不挤压 */}
+        <span className="flex-1 min-w-0 flex items-center gap-1 ml-1">
+          <span className="font-mono text-xs truncate">{task.name}</span>
+          {ports[task.id]?.length ? (
+            <span className="flex items-center gap-1 shrink-0">
+              {ports[task.id]!.map((url) => (
+                <button
+                  key={url}
+                  data-act
+                  className="px-1 py-0.5 text-[10px] rounded-sm text-accent bg-accent/10 hover:bg-accent/20 font-mono transition-colors"
+                  title={`用浏览器打开 ${url}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openBrowser(url);
+                  }}
+                >
+                  :{url.slice(url.lastIndexOf(':') + 1)}
+                </button>
+              ))}
+            </span>
+          ) : null}
+        </span>
         <span className="hidden group-hover:flex items-center shrink-0">
           <button
             data-act
@@ -693,33 +742,44 @@ export function TaskTreePanel() {
       }}
     >
       <div className="flex h-8 items-center gap-1 border-b border-border-default px-2 shrink-0">
-        <span className="text-xs font-semibold text-txt-primary mr-1">任务</span>
-        <button className="icon-btn" title="刷新" onClick={() => void refresh()}>
+        {treeWidth >= 200 && (
+          <span className="text-xs font-semibold text-txt-primary mr-1 shrink-0 whitespace-nowrap">任务</span>
+        )}
+        <button className="icon-btn shrink-0" title="刷新" onClick={() => void refresh()}>
           <RefreshCw size={12} />
         </button>
-        {(
-          [
-            ['all', '全部'],
-            ['running', `运行中${filterStats.running ? ` ${filterStats.running}` : ''}`],
-            ['stopped', `已停止${filterStats.stopped ? ` ${filterStats.stopped}` : ''}`],
-            ['error', `异常${filterStats.error ? ` ${filterStats.error}` : ''}`],
-          ] as [TreeFilter, string][]
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            className={`h-5 px-1.5 rounded text-[11px] transition-colors ${
-              filter === value
-                ? 'bg-accent text-white'
-                : 'text-txt-muted hover:bg-nav-hover hover:text-txt-primary'
-            }`}
-            onClick={() => setFilter(value)}
-          >
-            {label}
-          </button>
-        ))}
-        <span className="flex-1" />
+        {/* 筛选 chips：宽度不足时只显示图标（hover 有 tooltip），不换行不挤压 */}
+        <div ref={chipsRef} className="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+          {(
+            [
+              ['all', '全部', '全部', CHIP_ICONS.all],
+              ['running', '运行中', `运行中${filterStats.running ? ` ${filterStats.running}` : ''}`, CHIP_ICONS.running],
+              ['stopped', '已停止', `已停止${filterStats.stopped ? ` ${filterStats.stopped}` : ''}`, CHIP_ICONS.stopped],
+              ['error', '异常', `异常${filterStats.error ? ` ${filterStats.error}` : ''}`, CHIP_ICONS.error],
+            ] as [TreeFilter, string, string, React.ReactNode][]
+          ).map(([value, name, label, icon]) => (
+            <button
+              key={value}
+              title={name}
+              aria-label={name}
+              className={`rounded transition-colors shrink-0 whitespace-nowrap flex items-center gap-1 ${
+                iconChips ? 'w-5 h-5 justify-center' : 'h-5 px-1.5 text-[11px]'
+              } ${
+                filter === value
+                  ? iconChips
+                    ? 'bg-accent/15 text-accent'
+                    : 'bg-accent text-white'
+                  : 'text-txt-muted hover:bg-nav-hover hover:text-txt-primary'
+              }`}
+              onClick={() => setFilter(value)}
+            >
+              {icon}
+              {!iconChips && <span>{label}</span>}
+            </button>
+          ))}
+        </div>
         {filter !== 'all' && (
-          <button className="icon-btn" title="清除筛选" onClick={() => setFilter('all')}>
+          <button className="icon-btn shrink-0" title="清除筛选" onClick={() => setFilter('all')}>
             <Filter size={12} />
           </button>
         )}
@@ -785,6 +845,14 @@ export function TaskTreePanel() {
           }}
         />
       )}
+      {delConfirm && (
+        <DeleteConfirmModal
+          kind={delConfirm.kind}
+          name={delConfirm.name}
+          onCancel={() => setDelConfirm(null)}
+          onConfirm={doDelete}
+        />
+      )}
     </div>
   );
 }
@@ -834,6 +902,54 @@ function RenameModal({ current, onClose, onSave }: { current: string; onClose: (
             onClick={() => void save()}
           >
             保存
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteConfirmModal({
+  kind,
+  name,
+  onCancel,
+  onConfirm,
+}: {
+  kind: 'task' | 'folder';
+  name: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal title="删除确认" onClose={onCancel} width={380}>
+      <div className="flex flex-col gap-3 p-3">
+        <p className="text-xs text-txt-secondary leading-relaxed">
+          {kind === 'folder' ? (
+            <>
+              确定删除文件夹「<span className="text-txt-primary font-medium">{name}</span>」？
+              <span className="block mt-1 text-txt-subtle">
+                该文件夹下的所有子文件夹和任务都会被一并删除，运行中的进程会被停止。
+              </span>
+            </>
+          ) : (
+            <>
+              确定删除任务「<span className="text-txt-primary font-medium">{name}</span>」？
+              <span className="block mt-1 text-txt-subtle">若正在运行，进程会被停止。</span>
+            </>
+          )}
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            className="h-7 px-3 rounded text-xs border border-border-default bg-surface hover:bg-nav-hover transition-colors"
+            onClick={onCancel}
+          >
+            取消
+          </button>
+          <button
+            className="h-7 px-3 rounded text-xs bg-financial-down text-white hover:opacity-90 transition-opacity"
+            onClick={onConfirm}
+          >
+            删除
           </button>
         </div>
       </div>

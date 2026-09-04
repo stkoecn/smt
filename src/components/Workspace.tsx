@@ -94,6 +94,16 @@ export function openConsoleTab(taskId: string, name: string) {
   );
 }
 
+/** 关闭某个任务的控制台标签（任务被删除时调用，避免残留孤儿标签）。 */
+export function closeConsoleTab(taskId: string) {
+  const model = workspaceModel.current;
+  if (!model) return;
+  const tabId = `console-${taskId}`;
+  if (model.getNodeById(tabId)) {
+    model.doAction(Actions.deleteTab(tabId));
+  }
+}
+
 export function tabTitle(node: TabNode): string {
   const component = node.getComponent() ?? '';
   if (component.startsWith('console:')) {

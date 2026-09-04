@@ -136,9 +136,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   createTask: async (input) => {
+    const before = new Set(get().tasks.map((t) => t.id));
     const payload = await invoke<TaskTreePayload>('create_task', { input });
     set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
-    return payload.tasks.find((t) => t.folderId === input.folderId && t.name === input.name)?.id ?? null;
+    // 按「新增的 id」找回，避免同名任务匹配错（旧实现按 name 匹配会选中错误的旧任务）
+    return payload.tasks.find((t) => !before.has(t.id))?.id ?? null;
   },
 
   updateTask: async (id, input) => {

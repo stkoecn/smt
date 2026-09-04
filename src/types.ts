@@ -33,6 +33,12 @@ export interface TaskDef {
   shell: string | null;
   /** Windows 下经 UAC 以管理员身份启动 */
   runAsAdmin: boolean;
+  /** 依赖的任务 id 列表（启动前需先就绪，且须构成有向无环关系） */
+  dependencies: string[];
+  /** 是否在本任务启动前自动拉起依赖任务（false = 依赖未启动则本任务启动失败） */
+  waitForDeps: boolean;
+  /** 依赖全部就绪后、启动本任务前的延时秒数（默认 5） */
+  depDelaySecs: number;
   /** 同一文件夹下任务顺序（服务端维护） */
   order: number;
 }
@@ -48,6 +54,9 @@ export interface TaskInput {
   saveLog: boolean;
   shell: string | null;
   runAsAdmin: boolean;
+  dependencies: string[];
+  waitForDeps: boolean;
+  depDelaySecs: number;
 }
 
 /** list_shells 返回的可选终端 */

@@ -25,7 +25,7 @@ export function Modal({ title, onClose, children, width = 460 }: Props) {
       }}
     >
       <div
-        className="bg-surface border border-border-default rounded-lg shadow-2xl flex flex-col max-h-[88vh]"
+        className="bg-surface border border-border-default rounded-lg shadow-2xl flex flex-col max-h-[92vh]"
         style={{ width }}
         onMouseDown={(e) => e.stopPropagation()}
       >
