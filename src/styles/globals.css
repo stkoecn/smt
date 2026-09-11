@@ -1,3 +1,12 @@
+/* 隐藏滚动条但允许滚动（移动端控制栏） */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* JetBrains Mono：仅 latin + 仅 woff2（体积最小；woff 兜底可省）
    字体路径：@fontsource/jetbrains-mono/files/jetbrains-mono-latin-<w>-normal.woff2 */
 @font-face {

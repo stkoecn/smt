@@ -122,7 +122,7 @@ export function TaskFormModal({ task, defaultFolderId, onClose, onSaved }: Props
   return (
     <Modal title={task ? `编辑任务 · ${task.name}` : '新增任务'} onClose={onClose} width={680}>
       <div className="flex flex-col gap-3 p-3">
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <label className="flex-1 flex flex-col gap-1 text-xs text-txt-muted">
             任务名称
             <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
@@ -161,7 +161,7 @@ export function TaskFormModal({ task, defaultFolderId, onClose, onSaved }: Props
           />
           <span className="text-txt-subtle">支持多行脚本，内容将交给所选终端直接执行</span>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <label className="flex-1 flex flex-col gap-1 text-xs text-txt-muted">
             工作目录
             <div className="relative">

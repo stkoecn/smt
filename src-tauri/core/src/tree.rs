@@ -398,10 +398,20 @@ impl TaskTree {
         let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
         self.folders
             .retain(|f| !removed_set.contains(f.id.as_str()));
+        let mut removed_tasks: HashSet<String> = HashSet::new();
         self.tasks.retain(|t| match &t.folder_id {
-            Some(fid) => !removed_set.contains(fid.as_str()),
-            None => true,
+            Some(fid) if removed_set.contains(fid.as_str()) => {
+                removed_tasks.insert(t.id.clone());
+                false
+            }
+            _ => true,
         });
+        // 清理剩余任务对被删文件夹内任务的依赖引用，避免悬空依赖
+        if !removed_tasks.is_empty() {
+            for t in self.tasks.iter_mut() {
+                t.dependencies.retain(|d| !removed_tasks.contains(d));
+            }
+        }
         self.normalize();
         Ok(removed)
     }
@@ -845,5 +855,22 @@ mod tests {
         t.delete_task("a").unwrap();
         let b = t.task("b").unwrap();
         assert!(b.dependencies.is_empty());
+    }
+
+    #[test]
+    fn delete_folder_prunes_dangling_deps() {
+        let mut t = TaskTree::default();
+        t.create_folder("f1", "Folder1", None::<String>).unwrap();
+        let mut ia = base_input("A");
+        ia.folder_id = Some("f1".into());
+        t.create_task("a", ia).unwrap();
+        t.create_task("b", base_input("B")).unwrap();
+        let mut ib = base_input("B");
+        ib.dependencies = vec!["a".into()];
+        t.update_task("b", ib).unwrap();
+        t.delete_folder("f1").unwrap();
+        let b = t.task("b").unwrap();
+        assert!(b.dependencies.is_empty());
+        assert!(t.validate_dependencies().is_ok());
     }
 }

@@ -96,7 +96,12 @@ function collectFolderIds(node: TreeNode): string[] {
   return node.kind === 'folder' ? [node.data.id, ...node.children.flatMap(collectFolderIds)] : [];
 }
 
-export function TaskTreePanel() {
+interface TaskTreePanelProps {
+  /** 是否以移动端抽屉形式展示 */
+  isMobileDrawer?: boolean;
+}
+
+export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
   const folders = useTaskStore((s) => s.folders);
   const tasks = useTaskStore((s) => s.tasks);
   const statuses = useTaskStore((s) => s.statuses);
@@ -120,6 +125,7 @@ export function TaskTreePanel() {
   const newFolderSignal = useUIStore((s) => s.newFolderSignal);
   const filter = useUIStore((s) => s.treeFilter);
   const setFilter = useUIStore((s) => s.setTreeFilter);
+  const setMobileDrawerOpen = useUIStore((s) => s.setMobileDrawerOpen);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
@@ -222,13 +228,18 @@ export function TaskTreePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tree, filter, statuses]);
 
-  const openConsole = (task: TaskDef) => {
+  const openConsole = (task: TaskDef, autoStartIfStopped = false) => {
     setSelected(task.id);
     openConsoleTab(task.id, task.name);
-    // 进程未运行时，开 tab 后自动启动（让 ConsoleTab 先订阅再启动，保证初始输出不丢）
-    const st = statuses[task.id]?.state;
-    if (!st || STARTABLE_STATES.includes(st)) {
-      setTimeout(() => void start(task.id), 200);
+    if (isMobileDrawer) {
+      setMobileDrawerOpen(false);
+    }
+    // 双击节点特性：进程未运行时开 tab 自动启动
+    if (autoStartIfStopped) {
+      const st = statuses[task.id]?.state;
+      if (!st || STARTABLE_STATES.includes(st)) {
+        setTimeout(() => void start(task.id), 200);
+      }
     }
   };
 
@@ -596,7 +607,7 @@ export function TaskTreePanel() {
         style={{ paddingLeft: depth * 16 + 8 }}
         title={`${task.name} — ${task.command}`}
         onPointerDown={(e) => beginDrag(e, 'task', task.id, task.folderId)}
-        onDoubleClick={() => openConsole(task)}
+        onDoubleClick={() => openConsole(task, true)}
         onClick={() => {
           if (didDragRef.current) {
             didDragRef.current = false;
@@ -735,14 +746,17 @@ export function TaskTreePanel() {
   return (
     <div
       className="flex flex-col h-full bg-nav shrink-0"
-      style={{ width: treeWidth }}
+      style={{ width: isMobileDrawer ? '100%' : treeWidth }}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenu({ kind: 'blank', x: e.clientX, y: e.clientY });
       }}
     >
       <div className="flex h-8 items-center gap-1 border-b border-border-default px-2 shrink-0">
-        {treeWidth >= 200 && (
+        {isMobileDrawer && (
+          <span className="text-xs font-semibold text-txt-primary mr-1 shrink-0 whitespace-nowrap">任务列表</span>
+        )}
+        {!isMobileDrawer && treeWidth >= 200 && (
           <span className="text-xs font-semibold text-txt-primary mr-1 shrink-0 whitespace-nowrap">任务</span>
         )}
         <button className="icon-btn shrink-0" title="刷新" onClick={() => void refresh()}>
@@ -763,10 +777,10 @@ export function TaskTreePanel() {
               title={name}
               aria-label={name}
               className={`rounded transition-colors shrink-0 whitespace-nowrap flex items-center gap-1 ${
-                iconChips ? 'w-5 h-5 justify-center' : 'h-5 px-1.5 text-[11px]'
+                iconChips && !isMobileDrawer ? 'w-5 h-5 justify-center' : 'h-5 px-1.5 text-[11px]'
               } ${
                 filter === value
-                  ? iconChips
+                  ? iconChips && !isMobileDrawer
                     ? 'bg-accent/15 text-accent'
                     : 'bg-accent text-white'
                   : 'text-txt-muted hover:bg-nav-hover hover:text-txt-primary'
@@ -774,13 +788,22 @@ export function TaskTreePanel() {
               onClick={() => setFilter(value)}
             >
               {icon}
-              {!iconChips && <span>{label}</span>}
+              {(!iconChips || isMobileDrawer) && <span>{label}</span>}
             </button>
           ))}
         </div>
         {filter !== 'all' && (
           <button className="icon-btn shrink-0" title="清除筛选" onClick={() => setFilter('all')}>
             <Filter size={12} />
+          </button>
+        )}
+        {isMobileDrawer && (
+          <button
+            className="icon-btn w-6 h-6 ml-auto text-txt-subtle hover:text-txt-primary"
+            title="关闭抽屉"
+            onClick={() => setMobileDrawerOpen(false)}
+          >
+            ✕
           </button>
         )}
       </div>

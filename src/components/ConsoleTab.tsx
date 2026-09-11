@@ -43,6 +43,7 @@ export function ConsoleTab({ taskId }: Props) {
   const termRef = useRef<Terminal | null>(null);
   const disposedRef = useRef(false);
   const baselineReadyRef = useRef(false);
+  const pendingQueueRef = useRef<Uint8Array[]>([]);
   const [logPath, setLogPath] = useState<string | null>(null);
   const status = useTaskStore((s) => s.statuses[taskId]);
   const ports = useTaskStore((s) => s.ports[taskId]);
@@ -66,14 +67,16 @@ export function ConsoleTab({ taskId }: Props) {
   useEffect(() => {
     const holder = holderRef.current;
     if (!holder) return;
-    const ttyTheme = TTY_THEME[termTheme];
+    const ui = useUIStore.getState();
+    const ttyTheme = TTY_THEME[ui.terminalTheme];
     holder.style.setProperty('--xterm-bg', ttyTheme.background);
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: termFontSize,
-      fontFamily: termFontFamily,
+      fontSize: ui.terminalFontSize,
+      fontFamily: ui.terminalFontFamily,
       theme: ttyTheme,
       scrollback: 5000,
+      convertEol: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -83,10 +86,39 @@ export function ConsoleTab({ taskId }: Props) {
     fitRef.current = fit;
     term.focus();
 
+    term.attachCustomKeyEventHandler((event) => {
+      // 检查 Ctrl+C / Cmd+C
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+        // 如果当前选中了文本，优先复制选中文本到系统剪贴板
+        if (term.hasSelection()) {
+          if (event.type === 'keydown') {
+            const selection = term.getSelection();
+            if (selection) {
+              void navigator.clipboard.writeText(selection);
+            }
+          }
+          return false; // 拦截此按键，不将 \x03 (SIGINT) 发送给后台进程
+        }
+      }
+      // 检查 Ctrl+V / Cmd+V 粘贴
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+        if (event.type === 'keydown') {
+          void navigator.clipboard.readText().then((clipText) => {
+            if (clipText) {
+              void sendInput(taskId, clipText);
+            }
+          });
+        }
+        return false;
+      }
+      return true;
+    });
+
     const syncSize = () => {
+      if (!holder || holder.clientWidth < 10 || holder.clientHeight < 10) return;
       fit.fit();
       const term2 = termRef.current;
-      if (term2) {
+      if (term2 && term2.rows > 0 && term2.cols > 0) {
         void invoke('resize_pty', {
           taskId,
           rows: term2.rows,
@@ -94,6 +126,12 @@ export function ConsoleTab({ taskId }: Props) {
         }).catch(() => {});
       }
     };
+    // 延时一帧再 fit 一次，确保 flex 容器尺寸计算稳定
+    requestAnimationFrame(() => syncSize());
+    // 字体加载完成后再次重新 fit，防止字体异步加载后字符度量变动引发错位
+    if (typeof document !== 'undefined' && 'fonts' in document) {
+      void document.fonts.ready.then(() => syncSize());
+    }
     const onResize = syncSize;
     window.addEventListener('resize', onResize);
     const ro = new ResizeObserver(syncSize);
@@ -137,14 +175,20 @@ export function ConsoleTab({ taskId }: Props) {
     let disposed = false;
     disposedRef.current = false;
     baselineReadyRef.current = false;
+    pendingQueueRef.current = [];
 
     (async () => {
       const un = await listen<RawOutputEvent>('process-output-raw', (e) => {
         if (e.payload.taskId !== taskId) return;
-        if (!baselineReadyRef.current) return; // 基线未就绪：丢弃，基线会覆盖
+        const bytes = b64ToBytes(e.payload.data);
+        if (!baselineReadyRef.current) {
+          // 基线未就绪期间暂存增量，防止时序空窗丢字
+          pendingQueueRef.current.push(bytes);
+          return;
+        }
         const term = termRef.current;
         if (!term) return;
-        term.write(b64ToBytes(e.payload.data));
+        term.write(bytes);
       });
       if (disposed) {
         un();
@@ -166,6 +210,13 @@ export function ConsoleTab({ taskId }: Props) {
           term.write(snap.text);
         }
       }
+      // 回放基线读取期间暂存的增量输出
+      if (term && pendingQueueRef.current.length > 0) {
+        for (const chunk of pendingQueueRef.current) {
+          term.write(chunk);
+        }
+        pendingQueueRef.current = [];
+      }
       setLogPath(snap.logPath);
       baselineReadyRef.current = true;
     })();
@@ -181,6 +232,7 @@ export function ConsoleTab({ taskId }: Props) {
   useEffect(() => {
     if (status?.pid && status.pid !== prevPid.current && status.state === 'starting') {
       baselineReadyRef.current = false;
+      pendingQueueRef.current = [];
       const term = termRef.current;
       if (term) term.clear();
       void invoke<AttachResult>('attach_console', { taskId }).then((snap) => {
@@ -188,6 +240,12 @@ export function ConsoleTab({ taskId }: Props) {
         if (t && snap.text) {
           if (snap.raw) t.write(b64ToBytes(snap.text));
           else t.write(snap.text);
+        }
+        if (t && pendingQueueRef.current.length > 0) {
+          for (const chunk of pendingQueueRef.current) {
+            t.write(chunk);
+          }
+          pendingQueueRef.current = [];
         }
         setLogPath(snap.logPath);
         baselineReadyRef.current = true;
@@ -203,15 +261,15 @@ export function ConsoleTab({ taskId }: Props) {
   return (
     <div className="absolute inset-0 flex flex-col bg-surface">
       <div ref={holderRef} className="flex-1 min-h-0 overflow-hidden" />
-      <div className="flex items-center gap-1.5 h-7 px-2 border-t border-border-default shrink-0 bg-nav">
+      <div className="flex items-center gap-1 sm:gap-1.5 h-8 sm:h-7 px-2 border-t border-border-default shrink-0 bg-nav overflow-x-auto no-scrollbar">
         <InteractiveButton
           title="启动"
           variant="success"
           onClick={() => void start(taskId)}
           disabled={!canStart}
         >
-          <Play size={12} className="mr-1" />
-          启动
+          <Play size={12} className="sm:mr-1" />
+          <span className="hidden sm:inline">启动</span>
         </InteractiveButton>
         <InteractiveButton
           title="停止"
@@ -219,8 +277,8 @@ export function ConsoleTab({ taskId }: Props) {
           onClick={() => void stop(taskId)}
           disabled={!canStop}
         >
-          <Square size={12} className="mr-1" />
-          停止
+          <Square size={12} className="sm:mr-1" />
+          <span className="hidden sm:inline">停止</span>
         </InteractiveButton>
         <InteractiveButton
           title="重启"
@@ -228,13 +286,13 @@ export function ConsoleTab({ taskId }: Props) {
           onClick={() => void restart(taskId)}
           disabled={!canRestart}
         >
-          <RotateCw size={12} className="mr-1" />
-          重启
+          <RotateCw size={12} className="sm:mr-1" />
+          <span className="hidden sm:inline">重启</span>
         </InteractiveButton>
-        <div className="flex-1" />
-        <span className="px-1.5 h-[18px] flex items-center gap-1.5 rounded-sm bg-nav-hover border border-border-default text-[10px] font-mono text-txt-muted">
+        <div className="flex-1 min-w-2" />
+        <span className="px-1.5 h-[20px] sm:h-[18px] flex items-center gap-1.5 rounded-sm bg-nav-hover border border-border-default text-[10px] font-mono text-txt-muted shrink-0">
           <span className={`status-dot ${status?.state === 'running' ? 'status-dot-running' : status?.state === 'failed' || status?.state === 'error' ? 'status-dot-error' : 'status-dot-stopped'}`} />
-          {statusText || '未知状态'}
+          <span className="truncate max-w-[120px] sm:max-w-[200px]">{statusText || '未知状态'}</span>
         </span>
         {ports?.length ? (
           <span className="flex items-center gap-1 shrink-0">
@@ -255,7 +313,7 @@ export function ConsoleTab({ taskId }: Props) {
         </InteractiveButton>
         {logPath && (
           <button
-            className="text-xs text-txt-subtle font-mono truncate max-w-56 hover:text-accent transition-colors"
+            className="hidden md:inline text-xs text-txt-subtle font-mono truncate max-w-44 lg:max-w-56 hover:text-accent transition-colors"
             title={`打开所在文件夹: ${logPath}`}
             onClick={() => void openLogFolder(logPath)}
           >

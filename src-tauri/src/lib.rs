@@ -210,6 +210,7 @@ fn orchestrate_start(
     let Some(task) = tree.task(&task_id).cloned() else {
         return;
     };
+    let name_map = tree.name_map();
     if !task.dependencies.is_empty() {
         if task.wait_for_deps {
             // 自动拉起依赖任务
@@ -221,9 +222,20 @@ fn orchestrate_start(
                     }
                 }
             }
-            // 等待全部依赖 running（超时 30s，防止死锁）
+            // 等待全部依赖 running（超时 30s，检测到依赖失败立即短路）
             let deadline = Instant::now() + Duration::from_secs(30);
             while !task.dependencies.iter().all(|d| dep_running(d)) {
+                let current_statuses = process_manager().statuses(&task.dependencies);
+                for d in &task.dependencies {
+                    if let Some(st) = current_statuses.get(d) {
+                        if matches!(st.state, ProcessState::Failed | ProcessState::Error) {
+                            let dep_name = name_map.get(d).cloned().unwrap_or_else(|| d.clone());
+                            let err_msg = st.error.as_deref().unwrap_or("进程运行失败或异常退出");
+                            emit_dep_failure(&sink, &task_id, &format!("依赖任务「{dep_name}」未能成功就绪 ({err_msg})"));
+                            return;
+                        }
+                    }
+                }
                 if Instant::now() >= deadline {
                     emit_dep_failure(&sink, &task_id, "依赖任务启动超时");
                     return;
@@ -234,17 +246,21 @@ fn orchestrate_start(
             std::thread::sleep(Duration::from_secs(task.dep_delay_secs as u64));
         } else if !task.dependencies.iter().all(|d| dep_running(d)) {
             // 不自动拉起：依赖必须已在运行，否则本任务不启动
-            let name = task.dependencies
+            let failed_dep_id = task.dependencies
                 .iter()
                 .find(|d| !dep_running(d))
                 .cloned()
                 .unwrap_or_default();
-            emit_dep_failure(&sink, &task_id, &format!("依赖任务未启动（{name}）"));
+            let dep_name = name_map.get(&failed_dep_id).cloned().unwrap_or(failed_dep_id);
+            emit_dep_failure(&sink, &task_id, &format!("依赖任务未启动（{dep_name}）"));
             return;
         }
     }
-    let _ = process_manager().start(sink, task, elevated);
-    let _ = want_restart;
+    if want_restart {
+        let _ = process_manager().restart(sink, task);
+    } else {
+        let _ = process_manager().start(sink, task, elevated);
+    }
 }
 
 #[tauri::command]
@@ -254,12 +270,24 @@ fn stop_process(app: AppHandle, task_id: String) -> Result<ProcessStatus, String
 
 #[tauri::command]
 fn restart_process(app: AppHandle, task_id: String) -> Result<ProcessStatus, String> {
-    let task = store::store()
-        .tree()
+    let tree = store::store().tree();
+    let task = tree
         .task(&task_id)
         .cloned()
         .ok_or_else(|| format!("任务不存在: {task_id}"))?;
-    process_manager().restart(Arc::new(app.clone()) as Arc<dyn EventSink>, task)
+    let sink = Arc::new(app.clone()) as Arc<dyn EventSink>;
+    if !task.dependencies.is_empty() {
+        let sink2 = sink.clone();
+        let t2 = tree.clone();
+        let tid = task_id.clone();
+        std::thread::spawn(move || orchestrate_start(sink2, t2, tid, false, true));
+        return Ok(process_manager()
+            .statuses(std::slice::from_ref(&task_id))
+            .get(&task_id)
+            .cloned()
+            .unwrap_or_default());
+    }
+    process_manager().restart(sink, task)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -457,6 +485,7 @@ fn close_to_tray_enabled() -> bool {
 
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
     }

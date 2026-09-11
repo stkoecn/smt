@@ -31,24 +31,24 @@ export function StatusBar() {
   const total = Object.keys(statuses).length;
 
   return (
-    <div className="flex items-center h-6 px-2 gap-3 bg-nav border-t border-border-default shrink-0 text-xs tabular-nums text-txt-muted select-none">
-      <span className="flex items-center gap-1">
+    <div className="flex items-center h-6 px-2 gap-2 sm:gap-3 bg-nav border-t border-border-default shrink-0 text-xs tabular-nums text-txt-muted select-none overflow-x-auto no-scrollbar">
+      <span className="flex items-center gap-1 shrink-0">
         <span className={`status-dot ${running > 0 ? 'status-dot-running' : 'status-dot-stopped'}`} />
         {running} 运行中
       </span>
-      {transitional > 0 && <span>{transitional} 转换中</span>}
-      <span>{stopped} 已停止</span>
-      {exited > 0 && <span>{exited} 已结束</span>}
+      {transitional > 0 && <span className="hidden xs:inline shrink-0">{transitional} 转换中</span>}
+      <span className="hidden sm:inline shrink-0">{stopped} 已停止</span>
+      {exited > 0 && <span className="hidden md:inline shrink-0">{exited} 已结束</span>}
       {(failed > 0 || error > 0) && (
-        <span className="text-financial-down">
+        <span className="text-financial-down shrink-0 font-medium">
           {failed > 0 ? `${failed} 失败` : ''}
           {failed > 0 && error > 0 ? ' · ' : ''}
           {error > 0 ? `${error} 异常` : ''}
         </span>
       )}
-      <span>共 {total} 个任务</span>
-      <div className="flex-1" />
-      <span className="font-mono">{clock}</span>
+      <span className="hidden sm:inline shrink-0">共 {total} 个任务</span>
+      <div className="flex-1 min-w-2" />
+      <span className="font-mono text-[11px] shrink-0 text-txt-subtle">{clock}</span>
     </div>
   );
 }

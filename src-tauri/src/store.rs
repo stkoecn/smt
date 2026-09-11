@@ -118,7 +118,17 @@ impl TaskStore {
     fn save_yaml(&self) -> Result<(), String> {
         let json = serde_yaml_ng::to_string(&*self.config.lock().unwrap())
             .map_err(|e| format!("YAML 序列化失败: {e}"))?;
-        fs::write(&self.path, json).map_err(|e| format!("写入失败: {e}"))
+        let tmp_path = self.path.with_extension("tmp");
+        fs::write(&tmp_path, &json).map_err(|e| format!("写入临时配置文件失败: {e}"))?;
+        if let Err(e) = fs::rename(&tmp_path, &self.path) {
+            // Windows 备用回退：若 rename 遇到目标文件锁或特殊错误，尝试直接覆写并清理 tmp
+            if let Err(e2) = fs::write(&self.path, &json) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(format!("更新配置文件失败: {e} (回退覆写失败: {e2})"));
+            }
+            let _ = fs::remove_file(&tmp_path);
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -146,7 +156,7 @@ impl TaskStore {
 
     pub fn save_settings(&self, settings: HashMap<String, String>) -> Result<(), String> {
         let mut c = self.config.lock().unwrap();
-        c.settings = settings;
+        c.settings.extend(settings);
         drop(c);
         self.save_yaml()
     }

@@ -23,6 +23,7 @@ interface TaskState {
   ports: Record<string, string[]>;
   /** 系统探测到的可用终端 */
   shells: ShellOption[];
+  autoAttachHandler?: (taskId: string, name: string) => void;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   loadShells: () => Promise<void>;
@@ -112,24 +113,24 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   createFolder: async (name, parentId) => {
-    await invoke<TaskTreePayload>('create_folder', { name, parentId });
-    await get().refresh();
+    const payload = await invoke<TaskTreePayload>('create_folder', { name, parentId });
+    set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
   },
 
   renameFolder: async (id, name) => {
-    await invoke<TaskTreePayload>('rename_folder', { id, name });
-    await get().refresh();
+    const payload = await invoke<TaskTreePayload>('rename_folder', { id, name });
+    set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
   },
 
   deleteFolder: async (id) => {
-    await invoke<TaskTreePayload>('delete_folder', { id });
-    await get().refresh();
+    const payload = await invoke<TaskTreePayload>('delete_folder', { id });
+    set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
   },
 
   moveFolder: async (id, parentId, toIndex) => {
     try {
-      await invoke<TaskTreePayload>('move_folder', { id, parentId, toIndex });
-      await get().refresh();
+      const payload = await invoke<TaskTreePayload>('move_folder', { id, parentId, toIndex });
+      set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
     } catch {
       /* 非法落点（如移入自身子树），忽略 */
     }
@@ -160,8 +161,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   start: async (taskId) => {
     try {
+      const task = get().tasks.find((t) => t.id === taskId);
       const status = await invoke<ProcessStatus>('start_process', { taskId });
       get().applyStatus(taskId, status);
+      if (task?.autoAttach) {
+        get().autoAttachHandler?.(taskId, task.name);
+      }
       return status;
     } catch {
       return null;
@@ -170,8 +175,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   startElevated: async (taskId) => {
     try {
+      const task = get().tasks.find((t) => t.id === taskId);
       const status = await invoke<ProcessStatus>('start_process_elevated', { taskId });
       get().applyStatus(taskId, status);
+      if (task?.autoAttach) {
+        get().autoAttachHandler?.(taskId, task.name);
+      }
       return status;
     } catch {
       return null;

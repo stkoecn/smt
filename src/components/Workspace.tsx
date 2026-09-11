@@ -94,6 +94,9 @@ export function openConsoleTab(taskId: string, name: string) {
   );
 }
 
+// 绑定 autoAttach 处理器，任务启动时若开启了 autoAttach 则自动弹出窗口
+useTaskStore.setState({ autoAttachHandler: openConsoleTab });
+
 /** 关闭某个任务的控制台标签（任务被删除时调用，避免残留孤儿标签）。 */
 export function closeConsoleTab(taskId: string) {
   const model = workspaceModel.current;

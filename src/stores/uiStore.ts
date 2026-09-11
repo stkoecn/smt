@@ -37,6 +37,10 @@ interface UIState {
   /** 任务树快速筛选 */
   treeFilter: TreeFilter;
   setTreeFilter: (v: TreeFilter) => void;
+  /** 移动端/窄屏下的左侧任务树抽屉展开状态 */
+  mobileDrawerOpen: boolean;
+  setMobileDrawerOpen: (open: boolean) => void;
+  toggleMobileDrawer: () => void;
   /** TopNav 全局新增入口（信号量，TaskTreePanel 订阅响应） */
   newTaskSignal: number;
   bumpNewTask: () => void;
@@ -82,6 +86,9 @@ export const useUIStore = create<UIState>()(
       },
       treeFilter: 'all',
       setTreeFilter: (v) => set({ treeFilter: v }),
+      mobileDrawerOpen: false,
+      setMobileDrawerOpen: (open) => set({ mobileDrawerOpen: open }),
+      toggleMobileDrawer: () => set((s) => ({ mobileDrawerOpen: !s.mobileDrawerOpen })),
       newTaskSignal: 0,
       bumpNewTask: () => set((s) => ({ newTaskSignal: s.newTaskSignal + 1 })),
       newFolderSignal: 0,
@@ -89,12 +96,12 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'smt-ui-v2',
-      // 信号量是瞬态事件，绝不能持久化：否则上次会话残留的信号会在下次
-      // 启动时被 effect 消费，导致“启动应用自动弹出新建任务弹窗”。
+      // 信号量与临时移动端抽屉属于瞬态事件，禁止持久化
       partialize: (s) => {
-        const { newTaskSignal, newFolderSignal, ...rest } = s;
+        const { newTaskSignal, newFolderSignal, mobileDrawerOpen, ...rest } = s;
         void newTaskSignal;
         void newFolderSignal;
+        void mobileDrawerOpen;
         return rest;
       },
     },

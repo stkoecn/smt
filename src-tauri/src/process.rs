@@ -512,8 +512,8 @@ impl ProcessManager {
                 // 普通任务挂 ConPTY：子进程输出（stdout+stderr 合并）在终端层
                 // 统一转成 UTF-8，wsl 之类程序不会再输出 UTF-16LE 造成乱码。
                 let size = PtySize {
-                    rows: 40,
-                    cols: 160,
+                    rows: 30,
+                    cols: 100,
                     pixel_width: 0,
                     pixel_height: 0,
                 };
@@ -852,33 +852,25 @@ fn run_flush(sink: Arc<dyn EventSink>, task_id: String, rx: Receiver<ConsoleLine
     }
 }
 
-/// 原始终端字节流 flush 线程：把 reader 攒下的字节批按 base64 推给前端
-/// （xterm 直接 write 还原，ANSI 转义序列原样保留）。
+/// 原始终端字节流 flush 线程：把 reader 传来的字节流推给前端。
+/// 采用「立即响应 + 批量聚拢」策略：首个 chunk 到达立即聚拢排队数据后瞬时推送，
+/// 打字输入回显 0 延迟；大量刷屏时自动合并批次，兼具极低延迟与高效吞吐。
 fn run_raw_flush(sink: Arc<dyn EventSink>, task_id: String, rx: Receiver<Vec<u8>>) {
     let mut pending: Vec<u8> = Vec::new();
-    let mut deadline = Instant::now() + FLUSH_INTERVAL;
-    loop {
-        let wait = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(wait) {
-            Ok(chunk) => pending.extend(chunk),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                if !pending.is_empty() {
-                    sink.emit_json(
-                        OUTPUT_RAW_EVENT,
-                        serde_json::json!({ "taskId": task_id, "data": base64_encode(&pending) }),
-                    );
-                }
+    while let Ok(chunk) = rx.recv() {
+        pending.extend(chunk);
+        while let Ok(more) = rx.try_recv() {
+            pending.extend(more);
+            if pending.len() >= 32768 {
                 break;
             }
         }
-        if Instant::now() >= deadline && !pending.is_empty() {
+        if !pending.is_empty() {
             let batch = std::mem::take(&mut pending);
             sink.emit_json(
                 OUTPUT_RAW_EVENT,
                 serde_json::json!({ "taskId": task_id, "data": base64_encode(&batch) }),
             );
-            deadline = Instant::now() + FLUSH_INTERVAL;
         }
     }
 }
@@ -922,32 +914,75 @@ fn kill_tree(pid: Pid) {
     }
 }
 
-/// 枚举进程树：输入根 PID，返回 pid → 所属根 pid 的映射（含根自身）。
-/// Windows 下用 PowerShell 一次性取全量 pid/parent 映射后本地构建。
-fn process_tree(roots: &[u32]) -> HashMap<u32, u32> {
-    let mut out: HashMap<u32, u32> = HashMap::new();
-    let mut parent_of: HashMap<u32, u32> = HashMap::new();
-    #[cfg(windows)]
-    {
-        let mut pw = Command::new("powershell");
-        pw.args([
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }",
-        ]);
-        hide_window(&mut pw);
-        if let Ok(pw) = pw.output() {
-            for line in String::from_utf8_lossy(&pw.stdout).lines() {
-                let mut it = line.trim().splitn(2, ',');
-                let (Some(pid), Some(parent)) = (it.next(), it.next()) else {
-                    continue;
-                };
-                if let (Ok(pid), Ok(parent)) = (pid.parse::<u32>(), parent.parse::<u32>()) {
-                    parent_of.insert(pid, parent);
+#[cfg(windows)]
+fn get_windows_process_parents() -> HashMap<u32, u32> {
+    type Handle = *mut std::ffi::c_void;
+    type Bool = i32;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> Handle;
+        fn Process32FirstW(h_snapshot: Handle, lppe: *mut ProcessEntry32W) -> Bool;
+        fn Process32NextW(h_snapshot: Handle, lppe: *mut ProcessEntry32W) -> Bool;
+        fn CloseHandle(h_object: Handle) -> Bool;
+    }
+
+    const TH32CS_SNAPPROCESS: u32 = 0x00000002;
+    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+
+    let mut parent_of = HashMap::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot != INVALID_HANDLE_VALUE {
+            let mut entry = ProcessEntry32W {
+                dw_size: std::mem::size_of::<ProcessEntry32W>() as u32,
+                cnt_usage: 0,
+                th32_process_id: 0,
+                th32_default_heap_id: 0,
+                th32_module_id: 0,
+                cnt_threads: 0,
+                th32_parent_process_id: 0,
+                pc_pri_class_base: 0,
+                dw_flags: 0,
+                sz_exe_file: [0; 260],
+            };
+            if Process32FirstW(snapshot, &mut entry) != 0 {
+                loop {
+                    parent_of.insert(entry.th32_process_id, entry.th32_parent_process_id);
+                    if Process32NextW(snapshot, &mut entry) == 0 {
+                        break;
+                    }
                 }
             }
+            CloseHandle(snapshot);
         }
     }
+    parent_of
+}
+
+/// 枚举进程树：输入根 PID，返回 pid → 所属根 pid 的映射（含根自身）。
+/// Windows 下直接经 ToolHelp32 API 毫秒级内存快照取全量 pid/parent 映射（无子进程开销）。
+fn process_tree(roots: &[u32]) -> HashMap<u32, u32> {
+    let mut out: HashMap<u32, u32> = HashMap::new();
+    #[cfg(windows)]
+    let parent_of = get_windows_process_parents();
+    #[cfg(not(windows))]
+    let parent_of: HashMap<u32, u32> = HashMap::new();
+
     for &root in roots {
         out.insert(root, root);
     }
@@ -1475,7 +1510,7 @@ fn shell_command(task: &TaskDef) -> Result<(Command, Option<PathBuf>), String> {
                     } else {
                         (
                             exe,
-                            vec!["/C".into(), task.command.clone()],
+                            vec!["/C".into(), format!("chcp 65001 >nul & {}", task.command)],
                             None,
                         )
                     }
@@ -1572,9 +1607,11 @@ fn spawn_reader(
     proc: Arc<ManagedProc>,
 ) {
     let coder = Arc::new(Mutex::new(LineCoder::new()));
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
     // 读线程：喂字节 → 原始字节走 raw；同时切行供日志
     let coder_r = coder.clone();
     let proc_r = proc.clone();
+    let running_r = running.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; READ_BUFFER_SIZE];
         loop {
@@ -1601,13 +1638,18 @@ fn spawn_reader(
             push_line(kind, ln.as_bytes(), false, &proc_r);
         }
         proc_r.raw_tx.lock().unwrap().take(); // 断开 → raw flush 线程收尾
+        running_r.store(false, std::sync::atomic::Ordering::Release);
     });
 
     // 定时 flush 线程：把未以换行收尾的「部分行」增量推送（日志视图用）。
     let coder_f = coder.clone();
     let proc_f = proc.clone();
+    let running_f = running.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(PARTIAL_FLUSH_MS);
+        if !running_f.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
         let delta = coder_f.lock().unwrap().flush_partial();
         if let Some(delta) = delta {
             push_line(kind, delta.as_bytes(), false, &proc_f);
@@ -1789,9 +1831,15 @@ fn decode_line(bytes: &[u8]) -> String {
 /// 把原始字节追加进 raw 环形缓冲：超出上限时丢弃最旧的数据。
 fn append_raw(proc: &ManagedProc, bytes: &[u8]) {
     let mut raw = proc.raw.lock().unwrap();
-    if raw.len() + bytes.len() > RAW_CAP {
-        let drop = raw.len() + bytes.len() - RAW_CAP;
-        raw.drain(..drop);
+    if bytes.len() >= RAW_CAP {
+        raw.clear();
+        raw.extend_from_slice(&bytes[bytes.len() - RAW_CAP..]);
+        return;
+    }
+    let need_drop = (raw.len() + bytes.len()).saturating_sub(RAW_CAP);
+    if need_drop > 0 {
+        let drop_len = need_drop.min(raw.len());
+        raw.drain(..drop_len);
     }
     raw.extend_from_slice(bytes);
 }
@@ -1828,17 +1876,29 @@ fn push_line(kind: ConsoleStream, bytes: &[u8], eol: bool, proc: &ManagedProc) {
     }
 }
 
+fn local_datetime(ms: u64) -> chrono::DateTime<chrono::Local> {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_millis_opt(ms as i64)
+        .single()
+        .unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp_millis(ms as i64)
+                .map(|dt| dt.with_timezone(&chrono::Local))
+                .unwrap_or_default()
+        })
+}
+
 /// `HH:MM:SS.mmm`（本地时间，日志行前缀）
 fn fmt_hms_ms(ms: u64) -> String {
-    use chrono::{TimeZone, Timelike};
-    let t = chrono::Local.timestamp_millis_opt(ms as i64).unwrap();
+    use chrono::Timelike;
+    let t = local_datetime(ms);
     format!("{:02}:{:02}:{:02}.{:03}", t.hour(), t.minute(), t.second(), t.nanosecond() / 1_000_000)
 }
 
 /// `yyyyMMdd-HHmmss-mmm`（本地时间，日志文件名时间戳）
 fn fmt_file_stamp(ms: u64) -> String {
-    use chrono::{TimeZone, Timelike};
-    let t = chrono::Local.timestamp_millis_opt(ms as i64).unwrap();
+    use chrono::Timelike;
+    let t = local_datetime(ms);
     format!("{}-{:02}{:02}{:02}-{:03}", t.format("%Y%m%d"), t.hour(), t.minute(), t.second(), t.nanosecond() / 1_000_000)
 }
 
