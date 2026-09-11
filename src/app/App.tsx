@@ -1,21 +1,46 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { TopNav } from '@/components/TopNav';
 import { StatusBar } from '@/components/StatusBar';
 import { TaskTreePanel } from '@/components/TaskTreePanel';
+import { TaskFormModal } from '@/components/TaskFormModal';
 import { Workspace } from '@/components/Workspace';
 import { useTaskStore } from '@/stores/taskStore';
 import { useUIStore, hydrateUISettings } from '@/stores/uiStore';
 
 export default function App() {
   const load = useTaskStore((s) => s.load);
+  const createFolder = useTaskStore((s) => s.createFolder);
   const setTreeWidth = useUIStore((s) => s.setTreeWidth);
   const mobileDrawerOpen = useUIStore((s) => s.mobileDrawerOpen);
   const setMobileDrawerOpen = useUIStore((s) => s.setMobileDrawerOpen);
+  const newTaskSignal = useUIStore((s) => s.newTaskSignal);
+  const newFolderSignal = useUIStore((s) => s.newFolderSignal);
+  // 顶栏「新建任务」触发的全局弹窗：挂在 App 层，移动端抽屉关闭时也能弹出
+  const [navFormSeq, setNavFormSeq] = useState(0);
 
   useEffect(() => {
     void load();
     void hydrateUISettings();
   }, [load]);
+
+  // TopNav 全局「新增任务 / 新增文件夹」入口（面板内右键菜单走各自组件，互不影响）
+  useEffect(() => {
+    if (newTaskSignal === 0) return;
+    // setTimeout(0)：避免在 effect 中同步 setState（React lint 级联渲染警告）
+    const t = setTimeout(() => setNavFormSeq(newTaskSignal), 0);
+    return () => clearTimeout(t);
+  }, [newTaskSignal]);
+  useEffect(() => {
+    if (newFolderSignal === 0) return;
+    const t = setTimeout(async () => {
+      await createFolder('新建文件夹', null);
+      // 窄屏下新建结果在左侧树里，自动展开抽屉让用户看到，避免"点了没反应"
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        useUIStore.getState().setMobileDrawerOpen(true);
+      }
+    }, 0);
+    return () => clearTimeout(t);
+  }, [newFolderSignal, createFolder]);
 
   const onResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -75,6 +100,15 @@ export default function App() {
         </div>
       </div>
       <StatusBar />
+      {navFormSeq !== 0 && (
+        <TaskFormModal
+          key={`nav-new-${navFormSeq}`}
+          task={null}
+          defaultFolderId={null}
+          onClose={() => setNavFormSeq(0)}
+          onSaved={() => setNavFormSeq(0)}
+        />
+      )}
     </div>
   );
 }

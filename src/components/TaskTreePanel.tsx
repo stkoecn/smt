@@ -121,8 +121,6 @@ export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
   const treeWidth = useUIStore((s) => s.treeWidth);
   const collapsed = useUIStore((s) => s.collapsed);
   const toggleCollapsed = useUIStore((s) => s.toggleCollapsed);
-  const newTaskSignal = useUIStore((s) => s.newTaskSignal);
-  const newFolderSignal = useUIStore((s) => s.newFolderSignal);
   const filter = useUIStore((s) => s.treeFilter);
   const setFilter = useUIStore((s) => s.setTreeFilter);
   const setMobileDrawerOpen = useUIStore((s) => s.setMobileDrawerOpen);
@@ -172,18 +170,8 @@ export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
     setFormSeq((n) => n + 1);
   };
 
-  // TopNav 全局「新增任务 / 新增文件夹」入口
-  useEffect(() => {
-    if (newTaskSignal === 0) return;
-    // setTimeout(0)：避免在 effect 中同步 setState（React lint 级联渲染警告）
-    const t = setTimeout(() => openForm({ task: null, defaultFolderId: null }), 0);
-    return () => clearTimeout(t);
-  }, [newTaskSignal]);
-  useEffect(() => {
-    if (newFolderSignal === 0) return;
-    const t = setTimeout(() => void createFolder('新建文件夹', null), 0);
-    return () => clearTimeout(t);
-  }, [newFolderSignal, createFolder]);
+  // TopNav 全局「新增任务 / 新增文件夹」入口已提升到 App 层
+  // （本组件在移动端抽屉关闭时不挂载，弹窗挂在级别会在窄屏下无响应）
 
   const tree = useMemo(() => buildTree(folders, tasks), [folders, tasks]);
 
