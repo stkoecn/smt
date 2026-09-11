@@ -105,6 +105,8 @@ pub trait EventSink: Send + Sync {
 
 impl EventSink for tauri::AppHandle {
     fn emit_json(&self, event: &str, payload: serde_json::Value) {
+        // 双通道：同时广播给浏览器客户端（webserver 未启动时是空操作）
+        crate::webserver::broadcast_event(event, &payload);
         let _ = self.emit(event, payload);
     }
 }
@@ -134,6 +136,11 @@ static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub fn set_log_dir(dir: PathBuf) {
     let _ = fs::create_dir_all(&dir);
     let _ = LOG_DIR.set(dir);
+}
+
+/// 日志目录（webserver 等模块写运行日志用）；未 setup 时为 None。
+pub fn log_dir() -> Option<&'static PathBuf> {
+    LOG_DIR.get()
 }
 
 /// 多行命令的临时脚本目录（setup 时设置）。cmd /C 不支持内嵌换行，

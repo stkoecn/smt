@@ -30,6 +30,8 @@ portable-pty = "0.8"
 strip-ansi-escapes = "0.2.1"
 serde_yaml_ng = "0.9"
 tauri-plugin-dialog = "2.7.2"
+axum = { version = "0.8.4", features = ["ws"] }
+sha2 = "0.10.9"
 
 [features]
 # 该 feature 决定 tauri-build 生成生产(dev=false)还是开发(dev=true)上下文：

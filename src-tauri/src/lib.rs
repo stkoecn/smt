@@ -1,6 +1,6 @@
 //! SMT Task Manager — IPC commands and lifecycle.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// 注意：控制台子系统由 main.rs 的 windows_subsystem 决定，这里写无效
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,7 +11,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
+    AppHandle, Manager, RunEvent, WindowEvent,
 };
 
 use smt_core::{ProcessState, ProcessStatus, TaskInput, TaskTree};
@@ -20,6 +20,7 @@ use process::{EventSink, ProcessManager, STATUS_EVENT};
 mod config;
 mod process;
 mod store;
+mod webserver;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +45,63 @@ impl TaskTreePayload {
 fn process_manager() -> &'static ProcessManager {
     static PM: OnceLock<ProcessManager> = OnceLock::new();
     PM.get_or_init(ProcessManager::default)
+}
+
+// ────────────────────────────────────────────────────────────────
+// Web 桥接：/api/invoke 命令分发（webserver.rs 收到请求后转到这里，
+// 与桌面命令同源同模块；需要事件通道的命令用 AppHandle 构造 sink，
+// 事件经 EventSink → Tauri 窗口 + Web 广播双通道送达两个前端）。
+// ────────────────────────────────────────────────────────────────
+
+pub(crate) async fn web_dispatch(
+    app: &AppHandle,
+    cmd: &str,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use webserver::{arg, ok, opt_arg};
+    match cmd {
+        "list_tasks" => ok(list_tasks()),
+        "create_folder" => ok(create_folder(arg(args, "name")?, opt_arg(args, "parentId")?)),
+        "rename_folder" => ok(rename_folder(arg(args, "id")?, arg(args, "name")?)),
+        "move_folder" => ok(move_folder(
+            arg(args, "id")?,
+            opt_arg(args, "parentId")?,
+            opt_arg(args, "toIndex")?,
+        )),
+        "delete_folder" => ok(delete_folder(app.clone(), arg(args, "id")?)),
+        "create_task" => ok(create_task(arg(args, "input")?)),
+        "update_task" => ok(update_task(arg(args, "id")?, arg(args, "input")?)),
+        "delete_task" => ok(delete_task(app.clone(), arg(args, "id")?)),
+        "move_task" => ok(move_task(
+            arg(args, "id")?,
+            opt_arg(args, "folderId")?,
+            opt_arg(args, "toIndex")?,
+        )),
+        "start_process" => ok(start_process(app.clone(), arg(args, "taskId")?)),
+        "start_process_elevated" => {
+            ok(start_process_elevated(app.clone(), arg(args, "taskId")?))
+        }
+        "stop_process" => ok(stop_process(app.clone(), arg(args, "taskId")?)),
+        "restart_process" => ok(restart_process(app.clone(), arg(args, "taskId")?)),
+        "attach_console" => ok(attach_console(arg(args, "taskId")?)),
+        "send_input" => ok(send_input(arg(args, "taskId")?, arg(args, "data")?)),
+        "resize_pty" => ok(resize_pty(
+            arg(args, "taskId")?,
+            arg(args, "rows")?,
+            arg(args, "cols")?,
+        )),
+        "load_settings" => ok(Ok(load_settings())),
+        "save_settings" => ok(save_settings(arg(args, "settings")?)),
+        "config_path" => ok(Ok(config_path())),
+        "list_shells" => ok(Ok(list_shells())),
+        "web_service_status" => ok(Ok(web_service_status())),
+        "web_service_start" => ok(web_service_start()),
+        "web_service_stop" => ok(web_service_stop()),
+        "web_service_restart" => ok(web_service_restart()),
+        "open_in_browser" => ok(open_in_browser(arg(args, "url")?)),
+        "open_in_folder" => ok(open_in_folder(arg(args, "path")?)),
+        _ => Err(format!("未知命令: {cmd}")),
+    }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -362,6 +420,44 @@ fn list_shells() -> Vec<process::ShellOption> {
     process::list_shells()
 }
 
+// ────────────────────────────────────────────────────────────────
+// Web 服务管理（设置面板：停止 / 重启 / 端口 / 密码）
+// ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebStatus {
+    running: bool,
+    /// 实际监听地址（如 http://0.0.0.0:3089），未运行时为 null
+    addr: Option<String>,
+    /// 是否已设置访问密码（设置了则浏览器必须先登录）
+    auth_required: bool,
+}
+
+#[tauri::command]
+fn web_service_status() -> WebStatus {
+    let (running, addr, auth_required) = webserver::status();
+    WebStatus { running, addr, auth_required }
+}
+
+#[tauri::command]
+fn web_service_start() -> Result<(), String> {
+    webserver::start_service();
+    Ok(())
+}
+
+#[tauri::command]
+fn web_service_stop() -> Result<(), String> {
+    webserver::stop_service();
+    Ok(())
+}
+
+#[tauri::command]
+fn web_service_restart() -> Result<(), String> {
+    webserver::restart_service();
+    Ok(())
+}
+
 /// 用系统默认浏览器打开地址（仅允许 http/https，防注入）。
 #[tauri::command]
 fn open_in_browser(url: String) -> Result<(), String> {
@@ -424,7 +520,7 @@ fn start_ports_monitor(app: &AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(3));
         let ports = process_manager().listening_ports();
-        let _ = app.emit(process::PORT_EVENT, serde_json::json!({ "ports": ports }));
+        app.emit_json(process::PORT_EVENT, serde_json::json!({ "ports": ports }));
     });
 }
 
@@ -438,7 +534,7 @@ fn start_auto_start(app: &AppHandle) {
         if let Err(err) = process_manager()
             .start(Arc::new(app.clone()) as Arc<dyn EventSink>, task.clone(), false)
         {
-            let _ = app.emit(
+            app.emit_json(
                 process::STATUS_EVENT,
                 serde_json::json!({
                     "taskId": task.id,
@@ -629,6 +725,10 @@ pub fn run() {    tauri::Builder::default()
             load_settings,
             save_settings,
             config_path,
+            web_service_status,
+            web_service_start,
+            web_service_stop,
+            web_service_restart,
         ])
         .setup(|app| {
             let app_data_dir = app
@@ -640,6 +740,8 @@ pub fn run() {    tauri::Builder::default()
             store::init_store(base_dir.clone());
             process::set_log_dir(base_dir.join("logs"));
             process::set_script_dir(base_dir.join("scripts"));
+            // 浏览器/局域网访问入口（settings 可关：webEnabled=false）
+            webserver::start(app.handle().clone());
             let _ = setup_tray(&app.handle());
             // 恢复窗口大小/位置（在显示前应用）
             if let Some(win) = app.get_webview_window("main") {

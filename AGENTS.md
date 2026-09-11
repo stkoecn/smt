@@ -5,7 +5,10 @@
 ## 架构速览
 
 - `src-tauri/src/process.rs` — **核心**：进程启停（`cmd /C` 执行任务 command）、ConPTY（portable-pty）、原始字节流输出（base64 编码经事件推送，非文本行）、日志落盘 + tail、脚本文件生成、中文 GBK/UTF-8 自动识别、提权启动（UAC）
-- `src-tauri/src/lib.rs` — 命令注册层（22 个 tauri 命令）、系统托盘与关闭到托盘、端口监控、自动启动
+- `src-tauri/src/lib.rs` — 命令注册层（22 个 tauri 命令）、`web_dispatch`（Web 桥命令分发）、系统托盘与关闭到托盘、端口监控、自动启动
+- `src-tauri/src/webserver.rs` — 纯浏览器/局域网访问桥（axum，默认 `0.0.0.0:3088`，settings 可配 `webEnabled/webPort/webBind/webPassword`）：静态服务（内嵌资产优先、磁盘 dist 兜底、index.html 注入 shim）+ `POST /api/invoke` 命令桥 + `GET /ws` 事件广播；端口被占自动顺延（Windows 下 0.0.0.0 与 127.0.0.1 可并存绑定但回环优先命中具体地址，故绑前探测回环）；设置密码后强制认证（`/api/login` 换 token，invoke 带 `Authorization: Bearer`、WS 带 `?token=`，webPassword 存 SHA-256 hex）；启停/重启走 `web_service_*` 命令（设置面板可操作）；日志写 `logs/web.log`（无控制台输出）
+- `src-tauri/src/tauri_shim.js` — 浏览器端 Tauri IPC shim：模拟 `__TAURI_INTERNALS__`（invoke→HTTP、事件→WS、dialog→服务端原生对话框），带全屏登录门（401 自动重弹），前端零修改跑在浏览器里
+- `src/components/SettingsModal.tsx` — 终端样式 + 窗口行为 + Web 服务管理（状态/启停/重启/改端口/设密码）
 - `src-tauri/src/store.rs` — 配置持久化 `smt.yaml`（`SmtConfig { tasks, settings }`），旧版 `tasks.json` 自动迁移，内置 `python -m http.server 8000` 示例任务
 - `src-tauri/src/config.rs` — 便携目录解析：exe 同目录可写则用 exe 目录，否则回退应用数据目录
 - `src-tauri/core/` — 纯逻辑核心库：`tree.rs`（任务树增删改查/重名校验）、`state.rs`（ProcessStatus）、`ring.rs`（环形缓冲）
@@ -17,7 +20,7 @@
 
 ```bash
 npm run build                                    # 前端：tsc -b && vite build -> dist/
-cargo test --manifest-path src-tauri/Cargo.toml  # Rust 测试（19 个，含 smt.yaml 迁移用例）
+cargo test --manifest-path src-tauri/Cargo.toml  # Rust 测试（23 个，含 smt.yaml 迁移用例）
 npx tsc --noEmit && npx eslint .                 # 前端静态检查
 cargo build --release --manifest-path src-tauri/Cargo.toml  # 便携 exe（内嵌前端资源）
 ```
@@ -34,6 +37,8 @@ cargo build --release --manifest-path src-tauri/Cargo.toml  # 便携 exe（内�
 6. **进程清理**：窗口关闭默认最小化到托盘（设置 `closeToTray`，默认开启），仅「退出」时 `kill_all` 全部后台进程树。
 7. **改前端后必须重新构建**：`npm run build`（vite 产物被编译期嵌入 exe），再跑 `cargo build --release`，否则 exe 内是旧资源。
 8. **全局单实例**：`tauri-plugin-single-instance` 保证第二次启动直接唤起已有实例（`show_main_window`），不会再开新窗口。
+9. **事件双通道**：所有事件必须走 `EventSink::emit_json`（AppHandle 实现 = Tauri emit + `webserver::broadcast_event`），直接调 `app.emit()` 会漏掉浏览器端；命令分发新命令时记得在 `lib.rs::web_dispatch` 加分支。
+10. **Web 认证默认关闭**：`webPassword` 为空 = 免认证；设置后所有 `/api/invoke` 与 `/ws` 都要 token（内存 HashSet，应用重启即失效重登）。设置面板保存密码是 SHA-256 hex（前端 Web Crypto 计算），登录校验实时读 settings，改密码无需重启服务。
 
 ## 版本与发布
 
