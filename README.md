@@ -5,7 +5,6 @@
 - 技术栈：**Rust + Tauri 2**（后端）+ **React + TypeScript + Vite + Tailwind**（前端）+ **Axum**（Web 桥接）
 - 体积：便携独立运行 exe 仅约 **4 ~ 5 MB**（前端资源与静态资产全量内嵌）
 - 平台：Windows 桌面客户端（WebView2）+ 全平台现代浏览器 / 局域网访问（Web & PWA）
-- 社区交流：[Linux.do 社区讨论帖](https://linux.do/)
 
 ---
 
@@ -124,7 +123,11 @@ npm run tauri:build -- --bundles nsis
 
 推送 `v*` 格式的 tag 会自动触发 GitHub Actions CI 工作流：
 ```bash
-git tag v1.0.0-pre
-git push origin v1.0.0-pre
+git tag v1.0.0
+git push origin v1.0.0
 ```
 CI 会自动跨阶段完成前端静态检查、Rust 单元测试、便携单可执行文件与 NSIS 安装包的打包，并自动发布到 GitHub Release。
+
+---
+
+> **真诚、友善、团结、专业** —— [LINUX DO](https://linux.do/)
