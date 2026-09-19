@@ -98,7 +98,8 @@ pub(crate) async fn web_dispatch(
         "web_service_start" => ok(web_service_start()),
         "web_service_stop" => ok(web_service_stop()),
         "web_service_restart" => ok(web_service_restart()),
-        "open_in_browser" => ok(open_in_browser(arg(args, "url")?)),
+        // 纯 Web 环境下客户端由 shim 本地处理 window.open，服务端保持静默不弹窗
+        "open_in_browser" => ok(Ok::<(), String>(())),
         "open_in_folder" => ok(open_in_folder(arg(args, "path")?)),
         _ => Err(format!("未知命令: {cmd}")),
     }
@@ -697,10 +698,19 @@ fn apply_geometry(win: &tauri::WebviewWindow) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+pub fn run() {
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    // 仅在 Release 模式下启用单实例限制，避免本地 Debug 开发时与长期挂着的 Release 服务冲突
+    #[cfg(not(debug_assertions))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
-        }))
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_tasks,
@@ -740,6 +750,8 @@ pub fn run() {    tauri::Builder::default()
             store::init_store(base_dir.clone());
             process::set_log_dir(base_dir.join("logs"));
             process::set_script_dir(base_dir.join("scripts"));
+            // 后台异步预热终端探测缓存，避免用户首次打开新建任务时卡顿扫描
+            process::warm_shells_cache();
             // 浏览器/局域网访问入口（settings 可关：webEnabled=false）
             webserver::start(app.handle().clone());
             let _ = setup_tray(&app.handle());

@@ -259,8 +259,12 @@ export function ConsoleTab({ taskId }: Props) {
   const canRestart = !!status && ['running', 'exited', 'failed', 'error'].includes(status.state);
 
   return (
-    <div className="absolute inset-0 flex flex-col bg-surface">
-      <div ref={holderRef} className="flex-1 min-h-0 overflow-hidden" />
+    <div className="absolute inset-0 flex flex-col bg-surface overflow-hidden">
+      <div
+        ref={holderRef}
+        className="flex-1 min-h-0 overflow-hidden"
+        style={{ backgroundColor: 'var(--xterm-bg, #0c0c0c)' }}
+      />
       <div className="flex items-center gap-1 sm:gap-1.5 h-8 sm:h-7 px-2 border-t border-border-default shrink-0 bg-nav overflow-x-auto no-scrollbar">
         <InteractiveButton
           title="启动"

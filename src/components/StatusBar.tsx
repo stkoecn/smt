@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
+import { Globe } from 'lucide-react';
 import { useTaskStore } from '@/stores/taskStore';
 
 function useClock(): string {
@@ -10,9 +11,38 @@ function useClock(): string {
   return now.toTimeString().slice(0, 8);
 }
 
+function parseWebUrl(addr: string | null): { url: string; port: string } | null {
+  if (!addr) return null;
+  const idx = addr.lastIndexOf(':');
+  if (idx === -1) return null;
+  const port = addr.slice(idx + 1);
+  const rawHost = addr.slice(0, idx);
+  const host =
+    rawHost === '0.0.0.0' || rawHost === '[::]' || rawHost === '::' || !rawHost
+      ? '127.0.0.1'
+      : rawHost;
+  return {
+    url: `http://${host}:${port}`,
+    port,
+  };
+}
+
 export function StatusBar() {
   const statuses = useTaskStore((s) => s.statuses);
+  const webStatus = useTaskStore((s) => s.webStatus);
+  const openBrowser = useTaskStore((s) => s.openBrowser);
   const clock = useClock();
+
+  useEffect(() => {
+    if (!webStatus) {
+      void useTaskStore.getState().loadWebStatus();
+    }
+  }, [webStatus]);
+
+  const webInfo = useMemo(() => {
+    if (!webStatus || !webStatus.running) return null;
+    return parseWebUrl(webStatus.addr);
+  }, [webStatus]);
 
   let running = 0;
   let stopped = 0;
@@ -48,6 +78,17 @@ export function StatusBar() {
       )}
       <span className="hidden sm:inline shrink-0">共 {total} 个任务</span>
       <div className="flex-1 min-w-2" />
+      {webInfo && (
+        <button
+          type="button"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono text-accent bg-accent/10 hover:bg-accent/20 hover:text-accent-hover transition-colors shrink-0 cursor-pointer"
+          title={`点击打开 Web 管理界面 (${webInfo.url})`}
+          onClick={() => void openBrowser(webInfo.url)}
+        >
+          <Globe size={11} className="shrink-0" />
+          <span>Web :{webInfo.port}</span>
+        </button>
+      )}
       <span className="font-mono text-[11px] shrink-0 text-txt-subtle">{clock}</span>
     </div>
   );

@@ -134,18 +134,20 @@ export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
   // 删除确认（防误删：文件夹删除会级联删除子项并停止运行中的进程）
   const [delConfirm, setDelConfirm] = useState<{ kind: 'task' | 'folder'; id: string; name: string } | null>(null);
 
-  // 筛选 chips 可用宽度不足时切换为纯图标（文字版需要约 240px），避免挤压错乱
+  // 筛选 chips 可用宽度不足时切换为纯图标（文字版需要约 240px），避免挤压错乱；移动端抽屉始终使用纯图标
   const chipsRef = useRef<HTMLDivElement>(null);
-  const [iconChips, setIconChips] = useState(false);
+  const [narrowChips, setNarrowChips] = useState(false);
   useEffect(() => {
+    if (isMobileDrawer) return;
     const el = chipsRef.current;
     if (!el) return;
-    const update = () => setIconChips(el.clientWidth < 240);
+    const update = () => setNarrowChips(el.clientWidth < 240);
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [isMobileDrawer]);
+  const iconChips = isMobileDrawer || narrowChips;
   const [dragOver, setDragOver] = useState<
     | { kind: 'folder'; id: string; zone: 'before' | 'into' | 'after' }
     | { kind: 'task'; id: string; zone: 'before' | 'after' }
@@ -765,10 +767,10 @@ export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
               title={name}
               aria-label={name}
               className={`rounded transition-colors shrink-0 whitespace-nowrap flex items-center gap-1 ${
-                iconChips && !isMobileDrawer ? 'w-5 h-5 justify-center' : 'h-5 px-1.5 text-[11px]'
+                iconChips ? 'w-5 h-5 justify-center' : 'h-5 px-1.5 text-[11px]'
               } ${
                 filter === value
-                  ? iconChips && !isMobileDrawer
+                  ? iconChips
                     ? 'bg-accent/15 text-accent'
                     : 'bg-accent text-white'
                   : 'text-txt-muted hover:bg-nav-hover hover:text-txt-primary'
@@ -776,7 +778,7 @@ export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
               onClick={() => setFilter(value)}
             >
               {icon}
-              {(!iconChips || isMobileDrawer) && <span>{label}</span>}
+              {!iconChips && <span>{label}</span>}
             </button>
           ))}
         </div>

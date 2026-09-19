@@ -25,6 +25,7 @@ use axum::{Json, Router};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::async_runtime::JoinHandle;
+use tauri::Emitter;
 use tokio::sync::broadcast;
 
 const SHIM_JS: &str = include_str!("tauri_shim.js");
@@ -88,6 +89,20 @@ pub fn start_service() {
     *SERVE_TASK.lock().unwrap() = Some(task);
 }
 
+/// 广播当前 Web 服务的运行状态（含绑定的 IP:Port）。
+pub fn broadcast_web_status() {
+    if let Some(app) = APP.get() {
+        let (running, addr, auth_required) = status();
+        let payload = serde_json::json!({
+            "running": running,
+            "addr": addr,
+            "authRequired": auth_required,
+        });
+        let _ = app.emit("web-status", &payload);
+        broadcast_event("web-status", &payload);
+    }
+}
+
 /// 停止 Web 服务（断开所有浏览器连接、清空会话 token）。
 pub fn stop_service() {
     if let Some(task) = SERVE_TASK.lock().unwrap().take() {
@@ -97,6 +112,7 @@ pub fn stop_service() {
     *BOUND_ADDR.lock().unwrap() = None;
     *TOKENS.lock().unwrap() = None;
     web_log("Web 服务已停止");
+    broadcast_web_status();
 }
 
 /// 重启（重新读取 settings 的端口/绑定/密码）。
@@ -147,9 +163,11 @@ async fn serve(bind: String, port: u16) {
             "浏览器访问入口已就绪: http://{addr}/（认证: {}）",
             if auth_required() { "已开启" } else { "未设密码" }
         ));
+        broadcast_web_status();
         let _ = axum::serve(l, router()).await;
     } else {
         web_log("连续 10 个端口均绑定失败，Web 服务未启动");
+        broadcast_web_status();
     }
 }
 

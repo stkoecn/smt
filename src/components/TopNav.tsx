@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { TerminalSquare, Sun, Moon, Settings, FolderPlus, FilePlus, Menu } from 'lucide-react';
+import { Sun, Moon, Settings, FolderPlus, FilePlus, Menu } from 'lucide-react';
 import { useUIStore } from '@/stores/uiStore';
 import { SettingsModal } from '@/components/SettingsModal';
 
@@ -28,8 +28,8 @@ export function TopNav({ onNewTask, onNewFolder }: Props) {
       </button>
 
       {/* 品牌标识 */}
-      <div className="flex items-baseline gap-1.5 pr-2 sm:pr-3 sm:mr-1 border-r border-border-default/80">
-        <TerminalSquare size={15} className="text-accent self-center shrink-0" />
+      <div className="flex items-center gap-1.5 pr-2 sm:pr-3 sm:mr-1 border-r border-border-default/80">
+        <img src="/icon-192.png" alt="SMT Logo" className="w-4 h-4 rounded-xs self-center shrink-0 object-contain shadow-xs" />
         <span className="text-[13px] font-bold text-txt-primary tracking-wide">SMT</span>
         <span className="hidden sm:inline text-[10px] text-txt-subtle font-normal">Task Manager</span>
       </div>
@@ -38,7 +38,13 @@ export function TopNav({ onNewTask, onNewFolder }: Props) {
       <div className="flex items-center gap-0.5 flex-1 min-w-0">
         <button
           className="flex items-center h-6 sm:h-6 px-2 py-1 text-xs text-txt-muted hover:text-txt-primary hover:bg-nav-hover active:bg-nav-active rounded transition-colors shrink-0"
-          onClick={onNewFolder}
+          onClick={() => {
+            // 移动端/窄屏下立即打开左侧抽屉面板，方便用户查看新建结果
+            if (window.matchMedia('(max-width: 767px)').matches) {
+              useUIStore.getState().setMobileDrawerOpen(true);
+            }
+            onNewFolder?.();
+          }}
           title="新增文件夹"
         >
           <FolderPlus size={13} className="sm:mr-1 text-txt-subtle" />

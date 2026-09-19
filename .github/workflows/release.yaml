@@ -52,7 +52,9 @@ jobs:
         run: |
           mkdir -p dist/release
           cp src-tauri/target/release/smt-task-manager.exe dist/release/
-          cp src-tauri/target/release/bundle/nsis/*-setup.exe dist/release/
+          if ls src-tauri/target/release/bundle/nsis/*-setup.exe 1> /dev/null 2>&1; then
+            cp src-tauri/target/release/bundle/nsis/*-setup.exe dist/release/
+          fi
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2

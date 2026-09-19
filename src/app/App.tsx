@@ -32,12 +32,12 @@ export default function App() {
   }, [newTaskSignal]);
   useEffect(() => {
     if (newFolderSignal === 0) return;
+    // 点击新建文件夹立即打开抽屉面板（窄屏/移动端），无延迟
+    if (window.matchMedia('(max-width: 767px)').matches) {
+      useUIStore.getState().setMobileDrawerOpen(true);
+    }
     const t = setTimeout(async () => {
       await createFolder('新建文件夹', null);
-      // 窄屏下新建结果在左侧树里，自动展开抽屉让用户看到，避免"点了没反应"
-      if (window.matchMedia('(max-width: 767px)').matches) {
-        useUIStore.getState().setMobileDrawerOpen(true);
-      }
     }, 0);
     return () => clearTimeout(t);
   }, [newFolderSignal, createFolder]);
@@ -66,16 +66,18 @@ export default function App() {
         onNewTask={() => useUIStore.getState().bumpNewTask()}
         onNewFolder={() => useUIStore.getState().bumpNewFolder()}
       />
-      <div className="flex flex-1 min-h-0 relative overflow-hidden">
+      <div className="flex flex-1 min-h-0 relative overflow-hidden bg-surface">
         {/* 桌面端常驻任务树面板 */}
-        <div className="hidden md:flex h-full shrink-0">
+        <div className="hidden md:flex h-full shrink-0 relative">
           <TaskTreePanel />
+          {/* 左侧面板与终端之间的清晰分割线：高对比实体 1px 线，无任何白色间隙 */}
           <div
-            className="w-1.5 shrink-0 cursor-col-resize flex items-center justify-center group select-none"
+            className="relative w-px h-full bg-border-strong hover:bg-accent active:bg-accent cursor-col-resize shrink-0 select-none group transition-colors z-20"
             onMouseDown={onResizeStart}
             title="拖动调整面板宽度"
           >
-            <div className="w-px h-full bg-border-default/60 group-hover:bg-accent/80 transition-colors" />
+            {/* 左右扩展 4px 悬浮热区，不占物理宽度，鼠标极易抓取 */}
+            <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
           </div>
         </div>
 
@@ -95,7 +97,7 @@ export default function App() {
         )}
 
         {/* 工作区主体（终端标签页） */}
-        <div className="relative flex-1 min-w-0">
+        <div className="relative flex-1 min-w-0 bg-surface">
           <Workspace />
         </div>
       </div>

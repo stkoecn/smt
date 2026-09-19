@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Layout, Model, Actions, DockLocation, type IJsonModel, type TabNode } from 'flexlayout-react';
 import 'flexlayout-react/style/light.css';
-import { TerminalSquare } from 'lucide-react';
 import { ConsoleTab } from '@/components/ConsoleTab';
 import { useTaskStore, STATE_LABEL } from '@/stores/taskStore';
 
@@ -143,9 +142,9 @@ export function Workspace() {
           return <ConsoleTab taskId={taskId} />;
         }
         return (
-          <div className="flex flex-col items-center justify-center h-full bg-page text-txt-subtle select-none">
-            <div className="flex items-center justify-center w-12 h-12 mb-2 rounded-lg bg-nav-hover border border-border-default">
-              <TerminalSquare size={22} strokeWidth={1.75} className="text-accent" />
+          <div className="flex flex-col items-center justify-center h-full bg-surface text-txt-subtle select-none">
+            <div className="flex items-center justify-center w-14 h-14 mb-3 rounded-xl bg-nav-hover border border-border-default/80 p-2 shadow-xs">
+              <img src="/icon-192.png" alt="SMT Logo" className="w-full h-full object-contain rounded-lg" />
             </div>
             <span className="text-sm font-semibold text-txt-primary">SMT Task Manager</span>
             <span className="mt-1 text-xs">在左侧任务树中管理你的后台服务</span>

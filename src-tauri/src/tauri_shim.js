@@ -185,6 +185,28 @@
       if (cmd === 'plugin:event|emit' || cmd === 'plugin:event|emit_to') {
         return Promise.resolve(null); // 前端 → 后端事件未使用
       }
+      // 浏览器环境下点击端口：在当前浏览器新建标签页打开（不向服务端发 cmd start），
+      // 若在局域网访问，自动把 127.0.0.1 / localhost 换成当前访问的主机名/IP
+      if (cmd === 'open_in_browser') {
+        var rawUrl = args && args.url;
+        if (typeof rawUrl === 'string' && rawUrl) {
+          var targetUrl = rawUrl;
+          try {
+            var parsed = new URL(rawUrl);
+            if (
+              (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') &&
+              location.hostname &&
+              location.hostname !== '127.0.0.1' &&
+              location.hostname !== 'localhost'
+            ) {
+              parsed.hostname = location.hostname;
+            }
+            targetUrl = parsed.href;
+          } catch (e) { /* ignore */ }
+          window.open(targetUrl, '_blank', 'noopener,noreferrer');
+        }
+        return Promise.resolve(null);
+      }
       return httpInvoke(cmd, args);
     },
     convertFileSrc: function (filePath) {

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Modal } from '@/components/Modal';
 import { TERMINAL_FONTS, useUIStore } from '@/stores/uiStore';
+import { useTaskStore } from '@/stores/taskStore';
+import type { WebStatus } from '@/types';
 
 const selectCls =
   'w-full h-7 px-2 rounded bg-input-bg border border-border-default text-txt-primary outline-none focus:border-accent focus:ring-1 focus:ring-accent/60 transition-colors';
@@ -9,12 +11,6 @@ const inputCls =
   'h-7 px-2 rounded bg-input-bg border border-border-default text-txt-primary outline-none focus:border-accent focus:ring-1 focus:ring-accent/60 transition-colors';
 const btnCls =
   'h-7 px-3 rounded text-xs border border-border-default text-txt-secondary hover:bg-nav-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
-
-interface WebStatus {
-  running: boolean;
-  addr: string | null;
-  authRequired: boolean;
-}
 
 async function sha256Hex(text: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -69,6 +65,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
       // 端口探测/绑定是异步的，稍等再取状态
       await new Promise((r) => setTimeout(r, 600));
       refreshWeb();
+      void useTaskStore.getState().loadWebStatus();
     } catch (e) {
       setWebMsg(String(e));
     } finally {

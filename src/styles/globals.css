@@ -289,9 +289,10 @@ input[type='radio'] {
    FlexLayout — VS Code-style tab overrides（同参考项目）
    ================================================================ */
 .flexlayout__layout {
+  background-color: var(--bg-surface) !important;
   --color-background: var(--bg-surface) !important;
   --color-base: var(--bg-surface) !important;
-  --color-tabset-background: var(--bg-surface) !important;
+  --color-tabset-background: var(--bg-nav) !important;
   --color-tabset-background-selected: var(--bg-surface) !important;
   --color-tabset-background-maximized: var(--bg-hover) !important;
   --color-tabset-divider-line: transparent !important;
@@ -451,10 +452,12 @@ input[type='radio'] {
    ================================================================ */
 .xterm {
   height: 100%;
+  background-color: var(--xterm-bg, #0c0c0c) !important;
 }
 
-.xterm .xterm-viewport {
-  background: var(--xterm-bg, #0c0c0c);
+.xterm .xterm-viewport,
+.xterm .xterm-screen {
+  background-color: var(--xterm-bg, #0c0c0c) !important;
 }
 
 /* 拖拽落点指示线：插到目标前 / 后 */

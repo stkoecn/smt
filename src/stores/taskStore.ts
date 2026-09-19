@@ -12,6 +12,7 @@ import type {
   TaskInput,
   TaskTreePayload,
   TreeNode,
+  WebStatus,
 } from '@/types';
 
 interface TaskState {
@@ -23,15 +24,18 @@ interface TaskState {
   ports: Record<string, string[]>;
   /** 系统探测到的可用终端 */
   shells: ShellOption[];
+  /** Web 服务运行状态（包含绑定的 IP:Port） */
+  webStatus: WebStatus | null;
   autoAttachHandler?: (taskId: string, name: string) => void;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
-  loadShells: () => Promise<void>;
+  loadShells: (force?: boolean) => Promise<void>;
+  loadWebStatus: () => Promise<void>;
   applyStatus: (taskId: string, status: ProcessStatus) => void;
   applyPorts: (ports: Record<string, string[]>) => void;
   openBrowser: (url: string) => Promise<void>;
   openLogFolder: (path: string) => Promise<void>;
-  createFolder: (name: string, parentId: string | null) => Promise<void>;
+  createFolder: (name: string, parentId: string | null) => Promise<string | null>;
   renameFolder: (id: string, name: string) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
   moveFolder: (id: string, parentId: string | null, toIndex?: number) => Promise<void>;
@@ -50,6 +54,7 @@ interface TaskState {
 
 let statusListener: Promise<() => void> | null = null;
 let portListener: Promise<() => void> | null = null;
+let webStatusListener: Promise<() => void> | null = null;
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   ready: false,
@@ -58,11 +63,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   statuses: {},
   ports: {},
   shells: [],
+  webStatus: null,
 
   load: async () => {
     const payload = await invoke<TaskTreePayload>('list_tasks');
     set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses, ready: true });
     void get().loadShells();
+    void get().loadWebStatus();
     if (!statusListener) {
       statusListener = listen<StatusEvent>('process-status', (e) => {
         get().applyStatus(e.payload.taskId, e.payload.status);
@@ -73,14 +80,31 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         get().applyPorts(e.payload.ports);
       });
     }
+    if (!webStatusListener) {
+      webStatusListener = listen<WebStatus>('web-status', (e) => {
+        set({ webStatus: e.payload });
+      });
+    }
   },
 
   refresh: async () => {
     const payload = await invoke<TaskTreePayload>('list_tasks');
     set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
+    void get().loadWebStatus();
   },
 
-  loadShells: async () => {
+  loadWebStatus: async () => {
+    try {
+      const webStatus = await invoke<WebStatus>('web_service_status');
+      set({ webStatus });
+    } catch {
+      /* ignore */
+    }
+  },
+
+  loadShells: async (force = false) => {
+    // 内存中已有缓存且不强制刷新时，直接复用，杜绝重复请求
+    if (!force && get().shells.length > 0) return;
     try {
       const shells = await invoke<ShellOption[]>('list_shells');
       set({ shells });
@@ -113,8 +137,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   createFolder: async (name, parentId) => {
+    const before = new Set(get().folders.map((f) => f.id));
     const payload = await invoke<TaskTreePayload>('create_folder', { name, parentId });
     set({ folders: payload.folders, tasks: payload.tasks, statuses: payload.statuses });
+    return payload.folders.find((f) => !before.has(f.id))?.id ?? null;
   },
 
   renameFolder: async (id, name) => {

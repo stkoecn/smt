@@ -1,18 +1,37 @@
-import { useState, useMemo } from 'react';
-import { FolderOpen } from 'lucide-react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { FolderOpen, ChevronDown } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { TaskDef, TaskInput } from '@/types';
 import { useTaskStore } from '@/stores/taskStore';
 import { Modal } from '@/components/Modal';
 import { ScriptEditor } from '@/components/ScriptEditor';
 
-const LANG_BY_SHELL: Record<string, string> = {
-  bash: 'shell',
-  powershell: 'powershell',
-  pwsh: 'powershell',
-  python: 'python',
-  q: 'plaintext',
-};
+function detectLanguage(shellVal: string): string {
+  const lower = shellVal.trim().toLowerCase();
+  if (!lower || lower === 'cmd' || lower.endsWith('cmd.exe')) return 'bat';
+  if (lower === 'bash' || lower.includes('bash') || lower.endsWith('sh.exe') || lower.endsWith('.sh')) return 'shell';
+  if (lower === 'powershell' || lower === 'pwsh' || lower.includes('powershell') || lower.includes('pwsh')) return 'powershell';
+  if (lower === 'python' || lower.includes('python')) return 'python';
+  if (lower === 'q' || lower.endsWith('q.exe')) return 'plaintext';
+  return 'bat';
+}
+
+function getShellHint(shellVal: string): string {
+  const lower = shellVal.trim().toLowerCase();
+  if (!lower || lower === 'cmd' || lower.endsWith('cmd.exe')) {
+    return '系统默认（CMD），多行脚本将生成 .bat 执行';
+  }
+  if (lower === 'bash' || lower.includes('bash') || lower.endsWith('sh.exe') || lower.endsWith('.sh')) {
+    return 'Bash 环境，多行脚本将生成 .sh 并以正斜杠路径执行';
+  }
+  if (lower === 'powershell' || lower === 'pwsh' || lower.includes('powershell') || lower.includes('pwsh')) {
+    return 'PowerShell 环境，多行脚本将生成 .ps1 并以 Bypass 策略执行';
+  }
+  if (lower === 'python' || lower.includes('python')) {
+    return 'Python 解释器，多行脚本将生成 .py 执行';
+  }
+  return '自定义终端程序，将直接执行所指定的命令或脚本';
+}
 
 interface Props {
   /** null = 新建 */
@@ -50,6 +69,8 @@ export function TaskFormModal({ task, defaultFolderId, onClose, onSaved }: Props
   const [saveLog, setSaveLog] = useState(task?.saveLog ?? false);
   const [runAsAdmin, setRunAsAdmin] = useState(task?.runAsAdmin ?? false);
   const [shell, setShell] = useState(task?.shell ?? '');
+  const [shellMenuOpen, setShellMenuOpen] = useState(false);
+  const shellMenuRef = useRef<HTMLDivElement | null>(null);
   const [deps, setDeps] = useState<string[]>(task?.dependencies ?? []);
   const [waitForDeps, setWaitForDeps] = useState(task?.waitForDeps ?? false);
   const [depDelaySecs, setDepDelaySecs] = useState(task?.depDelaySecs ?? 5);
@@ -106,6 +127,40 @@ export function TaskFormModal({ task, defaultFolderId, onClose, onSaved }: Props
     }
   };
 
+  useEffect(() => {
+    if (useTaskStore.getState().shells.length === 0) {
+      void useTaskStore.getState().loadShells();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!shellMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (shellMenuRef.current && !shellMenuRef.current.contains(e.target as Node)) {
+        setShellMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [shellMenuOpen]);
+
+  /** 弹出系统可执行文件选择框 */
+  const pickShellFile = async () => {
+    try {
+      const file = await open({
+        multiple: false,
+        title: '选择终端可执行程序',
+        filters: [{ name: '可执行文件', extensions: ['exe', 'bat', 'cmd', 'sh'] }],
+      });
+      if (typeof file === 'string') {
+        setShell(file);
+        setShellMenuOpen(false);
+      }
+    } catch {
+      /* 忽略 */
+    }
+  };
+
   const inputCls =
     'w-full h-7 px-2 rounded bg-input-bg border border-border-default text-txt-primary placeholder:text-txt-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent/60 transition-colors';
 
@@ -139,23 +194,82 @@ export function TaskFormModal({ task, defaultFolderId, onClose, onSaved }: Props
             </select>
           </label>
         </div>
-        <label className="flex flex-col gap-1 text-xs text-txt-muted">
-          终端
-          <select className={inputCls} value={shell} onChange={(e) => setShell(e.target.value)}>
-            <option value="">系统默认（CMD）</option>
-            {shells.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}（{s.exe}）
-              </option>
-            ))}
-          </select>
-          <span className="text-txt-subtle">多行脚本自动交给所选终端执行（CMD 可写 BAT / PowerShell 可写 PS / Bash 可写 sh）</span>
-        </label>
+        <div className="flex flex-col gap-1 text-xs text-txt-muted relative" ref={shellMenuRef}>
+          <div className="flex items-center justify-between">
+            <span>终端 (Shell)</span>
+            <span className="text-[11px] text-txt-subtle">支持下拉选择、手动输入路径或浏览本地文件</span>
+          </div>
+          <div className="relative flex items-center">
+            <input
+              className={inputCls}
+              style={{ paddingRight: 58 }}
+              value={shell}
+              onChange={(e) => setShell(e.target.value)}
+              placeholder="系统默认（CMD），或输入可执行文件绝对路径"
+            />
+            <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+              <button
+                type="button"
+                className="icon-btn"
+                title="浏览选择终端可执行文件"
+                onClick={() => void pickShellFile()}
+              >
+                <FolderOpen size={13} />
+              </button>
+              <button
+                type="button"
+                className={`icon-btn ${shellMenuOpen ? 'text-accent' : ''}`}
+                title="选择可用终端预设"
+                onClick={() => setShellMenuOpen((v) => !v)}
+              >
+                <ChevronDown size={13} />
+              </button>
+            </div>
+          </div>
+
+          {/* 终端选择下拉面板 */}
+          {shellMenuOpen && (
+            <div className="absolute top-full left-0 right-0 mt-1 z-30 max-h-56 overflow-y-auto rounded bg-nav border border-border-default shadow-2xl py-1">
+              <div
+                className="px-2.5 py-1.5 hover:bg-nav-hover cursor-pointer flex items-center justify-between text-xs text-txt-primary"
+                onClick={() => {
+                  setShell('');
+                  setShellMenuOpen(false);
+                }}
+              >
+                <span className="font-medium">系统默认（CMD）</span>
+                <span className="text-[10px] text-txt-subtle font-mono">cmd.exe</span>
+              </div>
+              {shells.map((s) => (
+                <div
+                  key={s.id + s.exe}
+                  className="px-2.5 py-1.5 hover:bg-nav-hover cursor-pointer flex flex-col gap-0.5 text-xs text-txt-primary border-t border-border-default/40"
+                  onClick={() => {
+                    setShell(s.exe || s.id);
+                    setShellMenuOpen(false);
+                  }}
+                >
+                  <div className="flex items-center justify-between font-medium">
+                    <span>{s.name}</span>
+                    <span className="text-[10px] text-accent font-mono px-1 py-0.2 rounded bg-accent/10">
+                      {s.id}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-txt-subtle font-mono truncate" title={s.exe}>
+                    {s.exe}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <span className="text-txt-subtle">{getShellHint(shell)}</span>
+        </div>
         <div className="flex flex-col gap-1 text-xs text-txt-muted">
           启动脚本
           <ScriptEditor
             value={command}
-            language={LANG_BY_SHELL[shell] ?? 'bat'}
+            language={detectLanguage(shell)}
             onChange={setCommand}
             height={140}
           />

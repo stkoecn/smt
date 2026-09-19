@@ -123,6 +123,12 @@ export interface PortsEvent {
   ports: Record<string, string[]>;
 }
 
+export interface WebStatus {
+  running: boolean;
+  addr: string | null;
+  authRequired: boolean;
+}
+
 export type TreeNode =
   | { kind: 'folder'; data: FolderDef; children: TreeNode[] }
   | { kind: 'task'; data: TaskDef };

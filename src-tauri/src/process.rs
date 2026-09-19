@@ -95,6 +95,13 @@ impl ChildHandle {
             ChildHandle::Pty(_) => None,
         }
     }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            ChildHandle::Std(c) => c.kill(),
+            ChildHandle::Pty(c) => c.kill(),
+        }
+    }
 }
 
 /// Abstraction over where process events go. Tauri emits to the frontend;
@@ -360,6 +367,10 @@ impl ProcessManager {
             .cloned()
             .collect();
         for p in procs {
+            *p.desired_stop.lock().unwrap() = true;
+            if let Some(c) = p.child.lock().unwrap().as_mut() {
+                let _ = c.kill();
+            }
             let elevated = *p.elevated.lock().unwrap();
             let pid = if elevated {
                 *p.real_pid.lock().unwrap()
@@ -675,6 +686,7 @@ impl ProcessManager {
                     if c.exited().is_none() {
                         *p.desired_stop.lock().unwrap() = true;
                         p.status.lock().unwrap().stopping();
+                        let _ = c.kill();
                         c.pid()
                     } else {
                         None
@@ -1045,26 +1057,132 @@ fn find_on_path(name: &str) -> Option<String> {
     }
 }
 
-/// 查找 bash：先 PATH，再兜底 Git for Windows 常见安装路径（不一定在 PATH 上）。
-fn find_bash() -> Option<String> {
-    if let Some(p) = find_on_path("bash") {
-        return Some(p);
-    }
-    for p in [
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ] {
-        if std::path::Path::new(p).is_file() {
-            return Some(p.to_string());
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitBashCandidate {
+    pub name: String,
+    pub exe: String,
+    pub source: String,
+}
+
+/// 探测系统中的 Git Bash：
+/// 1. 优先检查 GIT_INSTALL_ROOT 环境变量（不区分大小写）；
+/// 2. 检查 PATH 目录（where bash / where git 并推导）；
+/// 3. 检查系统常见安装路径（C:\Program Files\Git、Scoop、LocalAppData 等）。
+fn detect_git_bash() -> Vec<GitBashCandidate> {
+    let mut candidates: Vec<GitBashCandidate> = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    let mut add_if_valid = |path: PathBuf, source: &str, label: &str| {
+        // 排除 GUI 启动器 git-bash.exe（它并非命令行解释器，不能作为 CLI shell 承接输入输出）
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.eq_ignore_ascii_case("git-bash.exe"))
+            .unwrap_or(false)
+        {
+            return;
         }
+        if path.is_file() {
+            let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let canon_str = canon.to_string_lossy().to_lowercase();
+            if seen_paths.insert(canon_str) {
+                candidates.push(GitBashCandidate {
+                    name: label.to_string(),
+                    exe: path.to_string_lossy().into_owned(),
+                    source: source.to_string(),
+                });
+            }
+        }
+    };
+
+    // 1. 检查环境变量 GIT_INSTALL_ROOT
+    if let Some((env_key, env_val)) = std::env::vars().find(|(k, v)| {
+        k.eq_ignore_ascii_case("GIT_INSTALL_ROOT") && !v.trim().is_empty()
+    }) {
+        let root = PathBuf::from(env_val.trim());
+        for sub in &[
+            PathBuf::from("bin").join("bash.exe"),
+            PathBuf::from("usr").join("bin").join("bash.exe"),
+            PathBuf::from("bin").join("sh.exe"),
+            PathBuf::from("usr").join("bin").join("sh.exe"),
+        ] {
+            add_if_valid(
+                root.join(sub),
+                "GIT_INSTALL_ROOT",
+                &format!("Git Bash ({env_key})"),
+            );
+        }
+    }
+
+    // 2. 检查 PATH 目录
+    if let Some(p) = find_on_path("bash") {
+        add_if_valid(PathBuf::from(&p), "PATH", "Git Bash (PATH)");
+    }
+    if let Some(git_exe) = find_on_path("git") {
+        let git_path = PathBuf::from(git_exe);
+        if let Some(parent) = git_path.parent() {
+            let root = if parent.ends_with("cmd") || parent.ends_with("bin") {
+                parent.parent().unwrap_or(parent)
+            } else {
+                parent
+            };
+            for sub in &[
+                PathBuf::from("bin").join("bash.exe"),
+                PathBuf::from("usr").join("bin").join("bash.exe"),
+            ] {
+                add_if_valid(root.join(sub), "PATH (git)", "Git Bash (PATH)");
+            }
+        }
+    }
+
+    // 3. 常见安装路径兜底
+    #[cfg(windows)]
+    {
+        for p in [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+        ] {
+            add_if_valid(PathBuf::from(p), "系统目录", "Git Bash");
+        }
+
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let user_path = PathBuf::from(userprofile);
+            let scoop_git = user_path.join(r"scoop\apps\git\current\bin\bash.exe");
+            add_if_valid(scoop_git, "Scoop", "Git Bash (Scoop)");
+            let local_git = user_path.join(r"AppData\Local\Programs\Git\bin\bash.exe");
+            add_if_valid(local_git, "LocalAppData", "Git Bash (User)");
+        }
+    }
+
+    candidates
+}
+
+/// 查找优先的 bash 可执行文件路径
+fn find_bash() -> Option<String> {
+    let list = detect_git_bash();
+    if let Some(first) = list.first() {
+        return Some(first.exe.clone());
+    }
+    #[cfg(not(windows))]
+    if let Some(p) = find_on_path("bash").or_else(|| find_on_path("sh")) {
+        return Some(p);
     }
     None
 }
 
-/// 探测系统可用终端，供新建任务时选择。
-pub fn list_shells() -> Vec<ShellOption> {
+static SHELLS_CACHE: OnceLock<Vec<ShellOption>> = OnceLock::new();
+
+/// 在程序启动 setup 阶段后台预热终端探测缓存，彻底消除首次调用的磁盘扫描等待。
+pub fn warm_shells_cache() {
+    std::thread::spawn(|| {
+        let _ = list_shells();
+    });
+}
+
+/// 实际执行磁盘扫描与环境变量检查的内部函数（仅在首次未命中时运行一次）。
+fn detect_shells_uncached() -> Vec<ShellOption> {
     let mut out: Vec<ShellOption> = Vec::new();
     #[cfg(windows)]
     {
@@ -1091,14 +1209,31 @@ pub fn list_shells() -> Vec<ShellOption> {
             });
         }
     }
-    if let Some(p) = find_bash() {
-        out.push(ShellOption {
-            id: "bash".into(),
-            name: "Bash (Git Bash)".into(),
-            exe: p,
-            args: "-c <命令> / <脚本>.sh".into(),
-        });
+
+    // Git Bash 探测列表（含环境变量 GIT_INSTALL_ROOT / PATH / 常见路径）
+    let bash_list = detect_git_bash();
+    if bash_list.is_empty() {
+        #[cfg(not(windows))]
+        if let Some(p) = find_on_path("bash").or_else(|| find_on_path("sh")) {
+            out.push(ShellOption {
+                id: "bash".into(),
+                name: "Bash".into(),
+                exe: p,
+                args: "-c <命令> / <脚本>.sh".into(),
+            });
+        }
+    } else {
+        for (idx, b) in bash_list.into_iter().enumerate() {
+            let id = if idx == 0 { "bash".into() } else { b.exe.clone() };
+            out.push(ShellOption {
+                id,
+                name: b.name,
+                exe: b.exe,
+                args: "-c <命令> / <脚本>.sh".into(),
+            });
+        }
     }
+
     if let Some(p) = find_on_path("python").or_else(|| find_on_path("python3")) {
         out.push(ShellOption {
             id: "python".into(),
@@ -1118,6 +1253,11 @@ pub fn list_shells() -> Vec<ShellOption> {
     out
 }
 
+/// 获取系统可用终端列表：读取内存单例缓存，0 延迟返回。
+pub fn list_shells() -> Vec<ShellOption> {
+    SHELLS_CACHE.get_or_init(detect_shells_uncached).clone()
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellOption {
@@ -1125,6 +1265,94 @@ pub struct ShellOption {
     pub name: String,
     pub exe: String,
     pub args: String,
+}
+
+#[derive(Clone, Debug)]
+enum ShellFlavor {
+    Cmd { exe: String },
+    PowerShell { exe: String },
+    Pwsh { exe: String },
+    Bash { exe: String },
+    Python { exe: String },
+    Q { exe: String },
+    Custom { exe: String },
+}
+
+fn resolve_shell(shell_opt: Option<&str>) -> Result<ShellFlavor, String> {
+    let s = shell_opt.map(str::trim).filter(|s| !s.is_empty());
+    let Some(raw) = s else {
+        #[cfg(windows)]
+        return Ok(ShellFlavor::Cmd {
+            exe: find_on_path("cmd").unwrap_or_else(|| "cmd.exe".into()),
+        });
+        #[cfg(not(windows))]
+        return Ok(ShellFlavor::Bash {
+            exe: find_on_path("bash").or_else(|| find_on_path("sh")).unwrap_or_else(|| "/bin/sh".into()),
+        });
+    };
+
+    match raw {
+        "cmd" => {
+            return Ok(ShellFlavor::Cmd {
+                exe: find_on_path("cmd").unwrap_or_else(|| "cmd.exe".into()),
+            });
+        }
+        "powershell" => {
+            return Ok(ShellFlavor::PowerShell {
+                exe: find_on_path("powershell").unwrap_or_else(|| "powershell.exe".into()),
+            });
+        }
+        "pwsh" => {
+            return Ok(ShellFlavor::Pwsh {
+                exe: find_on_path("pwsh").ok_or("未找到 PowerShell 7 (pwsh)，请先安装")?,
+            });
+        }
+        "bash" => {
+            return Ok(ShellFlavor::Bash {
+                exe: find_bash().ok_or("未找到 bash（可配置 GIT_INSTALL_ROOT 或安装 Git for Windows）")?,
+            });
+        }
+        "python" => {
+            return Ok(ShellFlavor::Python {
+                exe: find_on_path("python")
+                    .or_else(|| find_on_path("python3"))
+                    .ok_or("未找到 python，请先安装并加入 PATH")?,
+            });
+        }
+        "q" => {
+            return Ok(ShellFlavor::Q {
+                exe: find_on_path("q").ok_or("未找到 q (KDB+)，请先安装并加入 PATH")?,
+            });
+        }
+        _ => {}
+    }
+
+    // 自定义路径或命令名
+    let lower = raw.to_lowercase();
+    let file_name = Path::new(raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(raw)
+        .to_lowercase();
+    let stem = file_name
+        .strip_suffix(".exe")
+        .unwrap_or(&file_name);
+
+    if stem == "bash" || stem == "sh" || lower.contains("bash") {
+        Ok(ShellFlavor::Bash { exe: raw.to_string() })
+    } else if stem == "pwsh" {
+        Ok(ShellFlavor::Pwsh { exe: raw.to_string() })
+    } else if stem == "powershell" {
+        Ok(ShellFlavor::PowerShell { exe: raw.to_string() })
+    } else if stem == "python" || stem == "python3" {
+        Ok(ShellFlavor::Python { exe: raw.to_string() })
+    } else if stem == "q" {
+        Ok(ShellFlavor::Q { exe: raw.to_string() })
+    } else if stem == "cmd" {
+        Ok(ShellFlavor::Cmd { exe: raw.to_string() })
+    } else {
+        Ok(ShellFlavor::Custom { exe: raw.to_string() })
+    }
 }
 
 /// 提权启动的完整构造（Windows / UAC）：
@@ -1154,11 +1382,12 @@ fn elevated_launch_command(task: &TaskDef) -> Result<ElevatedLaunch, String> {
         let stamp = fmt_file_stamp(now_ms());
         let tag = sanitize(&task.id);
 
-        let ext = match task.shell.as_deref() {
-            Some("powershell" | "pwsh") => "ps1",
-            Some("bash") => "sh",
-            Some("python") => "py",
-            Some("q") => "q",
+        let flavor = resolve_shell(task.shell.as_deref())?;
+        let ext = match flavor {
+            ShellFlavor::PowerShell { .. } | ShellFlavor::Pwsh { .. } => "ps1",
+            ShellFlavor::Bash { .. } => "sh",
+            ShellFlavor::Python { .. } => "py",
+            ShellFlavor::Q { .. } => "q",
             _ => "bat",
         };
         let payload = write_script_file(task, ext)?;
@@ -1168,34 +1397,19 @@ fn elevated_launch_command(task: &TaskDef) -> Result<ElevatedLaunch, String> {
             .ok_or("日志目录未初始化")?
             .join(format!("{stamp}-{tag}.log"));
 
-        let invoke = match task.shell.as_deref() {
-            Some("powershell") => format!(
+        let invoke = match flavor {
+            ShellFlavor::PowerShell { exe } | ShellFlavor::Pwsh { exe } => format!(
                 r#""{}" -NoProfile -ExecutionPolicy Bypass -File "{}""#,
-                find_on_path("powershell").unwrap_or_else(|| "powershell.exe".into()),
+                exe,
                 payload.display()
             ),
-            Some("pwsh") => format!(
-                r#""{}" -NoProfile -ExecutionPolicy Bypass -File "{}""#,
-                find_on_path("pwsh").ok_or("未找到 PowerShell 7 (pwsh)，请先安装")?,
-                payload.display()
-            ),
-            Some("bash") => format!(
+            ShellFlavor::Bash { exe } => format!(
                 r#""{}" "{}""#,
-                find_bash().ok_or("未找到 bash（可安装 Git for Windows）")?,
+                exe,
                 payload.to_string_lossy().replace('\\', "/")
             ),
-            Some("python") => format!(
-                r#""{}" "{}""#,
-                find_on_path("python")
-                    .or_else(|| find_on_path("python3"))
-                    .ok_or("未找到 python，请先安装并加入 PATH")?,
-                payload.display()
-            ),
-            Some("q") => format!(
-                r#""{}" "{}""#,
-                find_on_path("q").ok_or("未找到 q (KDB+)，请先安装并加入 PATH")?,
-                payload.display()
-            ),
+            ShellFlavor::Python { exe } => format!(r#""{}" "{}""#, exe, payload.display()),
+            ShellFlavor::Q { exe } => format!(r#""{}" "{}""#, exe, payload.display()),
             _ => format!(r#"call "{}""#, payload.display()),
         };
         let wrapper = dir.join(format!("{stamp}-{tag}.admin.bat"));
@@ -1421,126 +1635,92 @@ fn spawn_log_tailer(p: Arc<ManagedProc>, log_path: PathBuf) {
 /// 返回的 `Option<PathBuf>` 是脚本文件路径（多行时才有），进程退出后删除。
 fn shell_command(task: &TaskDef) -> Result<(Command, Option<PathBuf>), String> {
     let multi = task.command.contains('\n');
-    let (exe, args, script): (String, Vec<String>, Option<PathBuf>) =
-        match task.shell.as_deref() {
-            Some("powershell") => {
-                let exe = find_on_path("powershell").unwrap_or_else(|| "powershell.exe".into());
+    let flavor = resolve_shell(task.shell.as_deref())?;
+    let (exe, args, script): (String, Vec<String>, Option<PathBuf>) = match flavor {
+        ShellFlavor::PowerShell { exe } | ShellFlavor::Pwsh { exe } => {
+            if multi {
+                let p = write_script_file(task, "ps1")?;
+                (
+                    exe,
+                    vec![
+                        "-NoProfile".into(),
+                        "-ExecutionPolicy".into(),
+                        "Bypass".into(),
+                        "-File".into(),
+                        p.to_string_lossy().into_owned(),
+                    ],
+                    Some(p),
+                )
+            } else {
+                (
+                    exe,
+                    vec!["-NoProfile".into(), "-Command".into(), task.command.clone()],
+                    None,
+                )
+            }
+        }
+        ShellFlavor::Bash { exe } => {
+            if multi {
+                let p = write_script_file(task, "sh")?;
+                let arg = p.to_string_lossy().replace('\\', "/");
+                (exe, vec![arg], Some(p))
+            } else {
+                (exe, vec!["-c".into(), task.command.clone()], None)
+            }
+        }
+        ShellFlavor::Python { exe } => {
+            if multi {
+                let p = write_script_file(task, "py")?;
+                (exe, vec![p.to_string_lossy().into_owned()], Some(p))
+            } else {
+                (exe, vec!["-c".into(), task.command.clone()], None)
+            }
+        }
+        ShellFlavor::Q { exe } => {
+            if multi {
+                let p = write_script_file(task, "q")?;
+                (exe, vec![p.to_string_lossy().into_owned()], Some(p))
+            } else {
+                (exe, vec!["-e".into(), task.command.clone()], None)
+            }
+        }
+        ShellFlavor::Cmd { exe } => {
+            #[cfg(windows)]
+            {
                 if multi {
-                    let p = write_script_file(task, "ps1")?;
+                    let p = write_script_file(task, "bat")?;
                     (
                         exe,
-                        vec![
-                            "-NoProfile".into(),
-                            "-ExecutionPolicy".into(),
-                            "Bypass".into(),
-                            "-File".into(),
-                            p.to_string_lossy().into_owned(),
-                        ],
+                        vec!["/C".into(), p.to_string_lossy().into_owned()],
                         Some(p),
                     )
                 } else {
                     (
                         exe,
-                        vec!["-NoProfile".into(), "-Command".into(), task.command.clone()],
+                        vec!["/C".into(), format!("chcp 65001 >nul & {}", task.command)],
                         None,
                     )
                 }
             }
-            Some("pwsh") => {
-                let exe = find_on_path("pwsh").ok_or("未找到 PowerShell 7 (pwsh)，请先安装")?;
+            #[cfg(not(windows))]
+            {
                 if multi {
-                    let p = write_script_file(task, "ps1")?;
-                    (
-                        exe,
-                        vec![
-                            "-NoProfile".into(),
-                            "-ExecutionPolicy".into(),
-                            "Bypass".into(),
-                            "-File".into(),
-                            p.to_string_lossy().into_owned(),
-                        ],
-                        Some(p),
-                    )
-                } else {
-                    (
-                        exe,
-                        vec!["-NoProfile".into(), "-Command".into(), task.command.clone()],
-                        None,
-                    )
-                }
-            }
-            Some("bash") => {
-                let exe = find_bash().ok_or("未找到 bash（可安装 Git for Windows）")?;
-                if multi {
-                    // msys bash 不能直接吃反斜杠路径，转成正斜杠
                     let p = write_script_file(task, "sh")?;
-                    let arg = p.to_string_lossy().replace('\\', "/");
-                    (exe, vec![arg], Some(p))
-                } else {
-                    (
-                        exe,
-                        vec!["-c".into(), task.command.clone()],
-                        None,
-                    )
-                }
-            }
-            Some("python") => {
-                let exe =
-                    find_on_path("python").or_else(|| find_on_path("python3")).ok_or("未找到 python，请先安装并加入 PATH")?;
-                if multi {
-                    let p = write_script_file(task, "py")?;
                     (exe, vec![p.to_string_lossy().into_owned()], Some(p))
                 } else {
                     (exe, vec!["-c".into(), task.command.clone()], None)
                 }
             }
-            Some("q") => {
-                let exe = find_on_path("q").ok_or("未找到 q (KDB+)，请先安装并加入 PATH")?;
-                if multi {
-                    let p = write_script_file(task, "q")?;
-                    (exe, vec![p.to_string_lossy().into_owned()], Some(p))
-                } else {
-                    (exe, vec!["-e".into(), task.command.clone()], None)
-                }
+        }
+        ShellFlavor::Custom { exe } => {
+            if multi {
+                let p = write_script_file(task, "bat")?;
+                (exe, vec![p.to_string_lossy().into_owned()], Some(p))
+            } else {
+                (exe, vec![task.command.clone()], None)
             }
-            _ => {
-                #[cfg(windows)]
-                {
-                    let exe = find_on_path("cmd").unwrap_or_else(|| "cmd.exe".into());
-                    if multi {
-                        let p = write_script_file(task, "bat")?;
-                        (
-                            exe,
-                            vec!["/C".into(), p.to_string_lossy().into_owned()],
-                            Some(p),
-                        )
-                    } else {
-                        (
-                            exe,
-                            vec!["/C".into(), format!("chcp 65001 >nul & {}", task.command)],
-                            None,
-                        )
-                    }
-                }
-                #[cfg(not(windows))]
-                {
-                    if multi {
-                        let p = write_script_file(task, "sh")?;
-                        (
-                            "/bin/sh".to_string(),
-                            vec![p.to_string_lossy().into_owned()],
-                            Some(p),
-                        )
-                    } else {
-                        (
-                            "/bin/sh".to_string(),
-                            vec!["-c".into(), task.command.clone()],
-                            None,
-                        )
-                    }
-                }
-            }
-        };
+        }
+    };
     let mut c = Command::new(exe);
     c.args(&args);
     Ok((c, script))
@@ -2357,5 +2537,44 @@ mod tests {
         });
         assert!(got, "raw byte events should carry the original token bytes");
         let _ = pm.stop(sink(), "t1");
+    }
+
+    #[test]
+    fn resolve_shell_supports_custom_path_and_presets() {
+        let f1 = resolve_shell(None).unwrap();
+        assert!(matches!(f1, ShellFlavor::Cmd { .. } | ShellFlavor::Bash { .. }));
+
+        let f2 = resolve_shell(Some("bash")).unwrap();
+        assert!(matches!(f2, ShellFlavor::Bash { .. }));
+
+        let f3 = resolve_shell(Some(r"C:\Custom\path\to\bash.exe")).unwrap();
+        if let ShellFlavor::Bash { exe } = f3 {
+            assert_eq!(exe, r"C:\Custom\path\to\bash.exe");
+        } else {
+            panic!("expected ShellFlavor::Bash");
+        }
+
+        let f4 = resolve_shell(Some(r"D:\my_tools\runner.exe")).unwrap();
+        if let ShellFlavor::Custom { exe } = f4 {
+            assert_eq!(exe, r"D:\my_tools\runner.exe");
+        } else {
+            panic!("expected ShellFlavor::Custom");
+        }
+    }
+
+    #[test]
+    fn list_shells_returns_valid_options() {
+        let shells = list_shells();
+        assert!(!shells.is_empty(), "shells list should not be empty");
+        // 必须包含 cmd 或 bash
+        assert!(shells.iter().any(|s| s.id == "cmd" || s.id == "bash"));
+        // 绝不能将 GUI 启动器 git-bash.exe 引入选项
+        for s in &shells {
+            assert!(
+                !s.exe.to_lowercase().ends_with("git-bash.exe"),
+                "should not contain GUI launcher git-bash.exe: {}",
+                s.exe
+            );
+        }
     }
 }
