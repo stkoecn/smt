@@ -14,6 +14,7 @@
 (function () {
   'use strict';
   if (window.__TAURI_INTERNALS__) return; // 真 Tauri 桌面环境
+  window.__SMT_WEB__ = true;
 
   var TOKEN_KEY = 'smt-web-token';
   var nextId = 1;

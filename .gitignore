@@ -7,3 +7,4 @@ src-tauri/core/target/
 Thumbs.db
 src-tauri/gen/
 test-pipe.*
+*.tsbuildinfo
