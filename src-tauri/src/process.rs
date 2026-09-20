@@ -644,6 +644,7 @@ impl ProcessManager {
                 *p2.pty_master.lock().unwrap() = None;
                 *p2.pty_writer.lock().unwrap() = None;
                 *p2.raw_tx.lock().unwrap() = None; // 断开 → raw flush 收尾
+                *p2.tx.lock().unwrap() = None;     // 断开 → run_flush 收到 Disconnected 退出
             }
             let desired = *p2.desired_stop.lock().unwrap();
             let mut status = p2.status.lock().unwrap();
@@ -860,12 +861,14 @@ fn run_flush(sink: Arc<dyn EventSink>, task_id: String, rx: Receiver<ConsoleLine
                 break;
             }
         }
-        if Instant::now() >= deadline && !pending.is_empty() {
-            let batch = std::mem::take(&mut pending);
-            sink.emit_json(
-                OUTPUT_EVENT,
-                serde_json::json!({ "taskId": task_id, "lines": batch }),
-            );
+        if Instant::now() >= deadline {
+            if !pending.is_empty() {
+                let batch = std::mem::take(&mut pending);
+                sink.emit_json(
+                    OUTPUT_EVENT,
+                    serde_json::json!({ "taskId": task_id, "lines": batch }),
+                );
+            }
             deadline = Instant::now() + FLUSH_INTERVAL;
         }
     }
@@ -1825,6 +1828,7 @@ fn spawn_reader(
             push_line(kind, ln.as_bytes(), false, &proc_r);
         }
         proc_r.raw_tx.lock().unwrap().take(); // 断开 → raw flush 线程收尾
+        proc_r.tx.lock().unwrap().take();     // 断开 → run_flush 线程收尾
         running_r.store(false, std::sync::atomic::Ordering::Release);
     });
 
