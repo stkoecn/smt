@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Minus, Square, Copy, X } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * 判断当前是否运行在原生桌面端（Tauri），在网页端 / PWA / 局域网访问时返回 false
@@ -21,64 +22,47 @@ export function WindowControls() {
   useEffect(() => {
     if (!runningInTauri) return;
 
-    let isMounted = true;
-    let cleanup: (() => void) | undefined;
+    let mounted = true;
+    const syncMaximized = () => {
+      void invoke<boolean>('window_is_maximized')
+        .then((max) => {
+          if (mounted) setIsMaximized(max);
+        })
+        .catch(() => {});
+    };
 
-    void (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const appWindow = getCurrentWindow();
-        const max = await appWindow.isMaximized();
-        if (isMounted) setIsMaximized(max);
-
-        // 监听窗口缩放或还原事件，实时更新最大化图标状态
-        const unlisten = await appWindow.onResized(async () => {
-          if (!isMounted) return;
-          try {
-            const currentMax = await appWindow.isMaximized();
-            if (isMounted) setIsMaximized(currentMax);
-          } catch {
-            /* ignore */
-          }
-        });
-
-        cleanup = unlisten;
-      } catch {
-        /* ignore */
-      }
-    })();
+    syncMaximized();
+    window.addEventListener('resize', syncMaximized);
 
     return () => {
-      isMounted = false;
-      if (cleanup) cleanup();
+      mounted = false;
+      window.removeEventListener('resize', syncMaximized);
     };
   }, [runningInTauri]);
 
-  const handleMinimize = useCallback(async () => {
+  const handleMinimize = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().minimize();
+      await invoke('window_minimize');
     } catch {
       /* ignore */
     }
   }, []);
 
-  const handleToggleMaximize = useCallback(async () => {
+  const handleToggleMaximize = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const win = getCurrentWindow();
-      await win.toggleMaximize();
-      const currentMax = await win.isMaximized();
-      setIsMaximized(currentMax);
+      const max = await invoke<boolean>('window_toggle_maximize');
+      setIsMaximized(max);
     } catch {
       /* ignore */
     }
   }, []);
 
-  const handleClose = useCallback(async () => {
+  const handleClose = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().close();
+      await invoke('window_close');
     } catch {
       /* ignore */
     }
@@ -90,23 +74,23 @@ export function WindowControls() {
   }
 
   return (
-    <div className="flex items-center h-full -mr-2.5 sm:-mr-2 ml-1 shrink-0 select-none">
-      {/* 最小化 */}
+    <>
+      {/* 最小化按钮：与顶栏图标按钮风格、尺寸完全一致 */}
       <button
         type="button"
         tabIndex={-1}
-        className="w-11 sm:w-11 h-full flex items-center justify-center text-txt-muted hover:text-txt-primary hover:bg-nav-hover active:bg-nav-active transition-colors cursor-pointer"
+        className="icon-btn w-7 h-7 hover:bg-nav-hover rounded-md text-txt-muted hover:text-txt-primary flex items-center justify-center transition-colors cursor-pointer"
         title="最小化"
         onClick={handleMinimize}
       >
         <Minus size={13} strokeWidth={2} />
       </button>
 
-      {/* 最大化 / 向下还原 */}
+      {/* 最大化 / 向下还原按钮 */}
       <button
         type="button"
         tabIndex={-1}
-        className="w-11 sm:w-11 h-full flex items-center justify-center text-txt-muted hover:text-txt-primary hover:bg-nav-hover active:bg-nav-active transition-colors cursor-pointer"
+        className="icon-btn w-7 h-7 hover:bg-nav-hover rounded-md text-txt-muted hover:text-txt-primary flex items-center justify-center transition-colors cursor-pointer"
         title={isMaximized ? '向下还原' : '最大化'}
         onClick={handleToggleMaximize}
       >
@@ -117,16 +101,16 @@ export function WindowControls() {
         )}
       </button>
 
-      {/* 关闭（悬停为 Windows 原生标准醒目红底） */}
+      {/* 关闭按钮：风格统一，悬停带有柔和微红高亮指示 */}
       <button
         type="button"
         tabIndex={-1}
-        className="w-11 sm:w-12 h-full flex items-center justify-center text-txt-muted hover:text-white hover:bg-[#e81123] active:bg-[#c4101e] transition-colors cursor-pointer"
-        title="关闭"
+        className="icon-btn w-7 h-7 rounded-md text-txt-muted hover:text-red-400 hover:bg-red-500/15 active:bg-red-500/25 flex items-center justify-center transition-colors cursor-pointer"
+        title="关闭（最小化到托盘）"
         onClick={handleClose}
       >
         <X size={14} strokeWidth={2} />
       </button>
-    </div>
+    </>
   );
 }

@@ -335,36 +335,53 @@ input[type='radio'] {
   padding: 0 !important;
   border-top: none !important;
   border-bottom: 1px solid var(--border-default) !important;
+  background: var(--bg-nav) !important;
 }
 
-.flexlayout__layout .flexlayout__tabset_tabbar_inner_tab_container_top {
-  padding-top: 0 !important;
-  padding-left: 0 !important;
-  padding-right: 0 !important;
-  border-top: none !important;
+.flexlayout__layout .flexlayout__tabset_tabbar_outer,
+.flexlayout__layout .flexlayout__tabset_tabbar_inner,
+.flexlayout__layout .flexlayout__tabset_tabbar_inner_tab_container,
+.flexlayout__layout .flexlayout__tabset_tabbar_inner_tab_container_top,
+.flexlayout__layout .flexlayout__tabset_tabbar_inner_tab_container_bottom {
+  gap: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+}
+
+/* 彻底移除标签之间的 4px divider 间隙 */
+.flexlayout__layout .flexlayout__tabset_tab_divider,
+.flexlayout__layout .flexlayout__border_tab_divider {
+  display: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 .flexlayout__layout .flexlayout__tab_button {
-  padding: 0 8px;
-  height: 26px;
-  line-height: 26px;
-  font-size: var(--font-sm);
-  border-radius: 0;
-  border: none;
-  border-right: 1px solid var(--border-default);
-  border-top: 2px solid transparent;
-  margin: 0;
+  padding: 0 10px !important;
+  height: 28px !important;
+  line-height: 26px !important;
+  font-size: var(--font-sm) !important;
+  border-radius: 0 !important;
+  border: none !important;
+  border-top: 2px solid transparent !important;
+  border-right: 1px solid var(--border-default) !important;
+  margin: 0 !important;
+  box-shadow: none !important;
 }
 
 .flexlayout__layout .flexlayout__tab_button--selected {
-  background: var(--bg-surface);
-  border-top: 2px solid rgb(var(--color-accent));
-  color: var(--text-primary);
+  background: var(--bg-surface) !important;
+  border-top: 2px solid rgb(var(--color-accent)) !important;
+  color: var(--text-primary) !important;
 }
 
 .flexlayout__layout .flexlayout__tab_button--unselected {
-  background: transparent;
-  color: var(--text-subtle);
+  background: transparent !important;
+  border-top: 2px solid transparent !important;
+  color: var(--text-subtle) !important;
 }
 
 /* 标签内容区与边框/上方零空隙 */

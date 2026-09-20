@@ -101,6 +101,11 @@ pub(crate) async fn web_dispatch(
         // 纯 Web 环境下客户端由 shim 本地处理 window.open，服务端保持静默不弹窗
         "open_in_browser" => ok(Ok::<(), String>(())),
         "open_in_folder" => ok(open_in_folder(arg(args, "path")?)),
+        "window_minimize" | "window_close" | "window_start_dragging" => {
+            ok(Ok::<(), String>(()))
+        }
+        "window_toggle_maximize" => ok(Ok::<bool, String>(false)),
+        "window_is_maximized" => ok(Ok::<bool, String>(false)),
         _ => Err(format!("未知命令: {cmd}")),
     }
 }
@@ -697,6 +702,46 @@ fn apply_geometry(win: &tauri::WebviewWindow) {
     }
 }
 
+// ────────────────────────────────────────────────────────────────
+// Window management commands (Frameless window controls)
+// ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn window_minimize(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("main").ok_or("窗口不存在")?;
+    win.minimize().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn window_toggle_maximize(app: tauri::AppHandle) -> Result<bool, String> {
+    let win = app.get_webview_window("main").ok_or("窗口不存在")?;
+    if win.is_maximized().unwrap_or(false) {
+        win.unmaximize().map_err(|e| e.to_string())?;
+        Ok(false)
+    } else {
+        win.maximize().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+fn window_close(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("main").ok_or("窗口不存在")?;
+    win.close().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn window_start_dragging(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("main").ok_or("窗口不存在")?;
+    win.start_dragging().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn window_is_maximized(app: tauri::AppHandle) -> Result<bool, String> {
+    let win = app.get_webview_window("main").ok_or("窗口不存在")?;
+    win.is_maximized().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[allow(unused_mut)]
@@ -739,6 +784,11 @@ pub fn run() {
             web_service_start,
             web_service_stop,
             web_service_restart,
+            window_minimize,
+            window_toggle_maximize,
+            window_close,
+            window_start_dragging,
+            window_is_maximized,
         ])
         .setup(|app| {
             let app_data_dir = app

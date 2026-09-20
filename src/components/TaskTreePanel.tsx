@@ -825,8 +825,13 @@ export function TaskTreePanel({ isMobileDrawer = false }: TaskTreePanelProps) {
         )}
         {filteredTree.map((node) => renderNode(node, 0))}
       </div>
-      <div className="shrink-0 h-6 px-2 flex items-center text-[10px] text-txt-subtle border-t border-border-default select-none">
-        双击任务打开输出窗口 · 拖拽节点可排序/移入文件夹
+      <div
+        className="shrink-0 h-6 px-2 flex items-center text-[10px] text-txt-subtle border-t border-border-default select-none overflow-hidden min-w-0"
+        title="双击任务打开输出窗口 · 拖拽节点可排序/移入文件夹"
+      >
+        <span className="truncate block w-full">
+          双击任务打开输出窗口 · 拖拽节点可排序/移入文件夹
+        </span>
       </div>
 
       {ghost && <DragGhost x={ghost.x} y={ghost.y} label={ghost.label} hint={ghostHint} />}
