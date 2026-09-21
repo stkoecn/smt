@@ -19,7 +19,7 @@
         "minHeight": 600,
         "decorations": false,
         "shadow": true,
-        "visible": false
+        "backgroundColor": "#0c0f18"
       }
     ],
     "withGlobalTauri": true,

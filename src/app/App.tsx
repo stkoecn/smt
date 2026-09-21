@@ -6,7 +6,6 @@ import { TaskFormModal } from '@/components/TaskFormModal';
 import { Workspace } from '@/components/Workspace';
 import { useTaskStore } from '@/stores/taskStore';
 import { useUIStore, hydrateUISettings } from '@/stores/uiStore';
-import { invoke } from '@tauri-apps/api/core';
 
 export default function App() {
   const load = useTaskStore((s) => s.load);
@@ -20,17 +19,8 @@ export default function App() {
   const [navFormSeq, setNavFormSeq] = useState(0);
 
   useEffect(() => {
-    const init = async () => {
-      await load();
-      await hydrateUISettings();
-      // 前端首帧渲染完毕后，通知桌面端显示主窗口（消除白屏闪烁）
-      try {
-        await invoke('window_show');
-      } catch {
-        /* 非 Tauri 桌面端忽略 */
-      }
-    };
-    void init();
+    void load();
+    void hydrateUISettings();
   }, [load]);
 
   // TopNav 全局「新增任务 / 新增文件夹」入口（面板内右键菜单走各自组件，互不影响）
