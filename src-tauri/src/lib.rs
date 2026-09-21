@@ -101,7 +101,7 @@ pub(crate) async fn web_dispatch(
         // 纯 Web 环境下客户端由 shim 本地处理 window.open，服务端保持静默不弹窗
         "open_in_browser" => ok(Ok::<(), String>(())),
         "open_in_folder" => ok(open_in_folder(arg(args, "path")?)),
-        "window_minimize" | "window_close" | "window_start_dragging" => {
+        "window_minimize" | "window_close" | "window_start_dragging" | "window_show" => {
             ok(Ok::<(), String>(()))
         }
         "window_toggle_maximize" => ok(Ok::<bool, String>(false)),
@@ -742,6 +742,15 @@ fn window_is_maximized(app: tauri::AppHandle) -> Result<bool, String> {
     win.is_maximized().map_err(|e| e.to_string())
 }
 
+/// 前端首帧渲染完毕后调用，显示主窗口（窗口初始 invisible，避免白屏闪烁）
+#[tauri::command]
+fn window_show(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        win.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[allow(unused_mut)]
@@ -789,6 +798,7 @@ pub fn run() {
             window_close,
             window_start_dragging,
             window_is_maximized,
+            window_show,
         ])
         .setup(|app| {
             let app_data_dir = app

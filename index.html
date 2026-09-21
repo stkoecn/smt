@@ -13,6 +13,25 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="SMT" />
+    <style>
+      /* 首屏加载占位：消除 WebView 初始化期间的白色空白闪烁 */
+      html, body { margin: 0; padding: 0; background: #0c0f18; }
+      #root {
+        width: 100vw; height: 100vh;
+        display: flex; align-items: center; justify-content: center;
+        background: #0c0f18;
+      }
+      #root::before {
+        content: '';
+        display: block;
+        width: 48px; height: 48px;
+        border: 3px solid rgba(99,102,241,0.25);
+        border-top-color: rgba(99,102,241,0.9);
+        border-radius: 50%;
+        animation: _smt-spin 0.7s linear infinite;
+      }
+      @keyframes _smt-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
     <div id="root"></div>

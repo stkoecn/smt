@@ -18,7 +18,8 @@
         "minWidth": 960,
         "minHeight": 600,
         "decorations": false,
-        "shadow": true
+        "shadow": true,
+        "visible": false
       }
     ],
     "withGlobalTauri": true,
